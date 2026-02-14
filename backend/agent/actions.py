@@ -19,11 +19,13 @@ def action_executor(action, state: AgentState, llm=LLM):
     """
     action_type = action.get('action_type', 'unknown')
     description = action.get('description', '')
+    params = action.get('params',{})
+
     conversation_history = state.get('messages', [])[-10:] # last 10 messages
     previous_results = state.get('previous_results', {})
     user_request = conversation_history[-1].content if conversation_history else ''
 
-    # LLM prompt for the action
+    # LLM prompt for the action - use description
     prompt = ACTION_PROMPT.get(action_type)
     if prompt:
         chain = prompt | llm
@@ -35,9 +37,10 @@ def action_executor(action, state: AgentState, llm=LLM):
         })
         return {"action_type": action_type, "result": result.content}
 
+    # Tool based actions: call the tool function, use params
     tool = ACTION_TOOLS.get(action_type)
     if tool:
-        result = tool(description)
+        result = tool.invoke(params)
         return {"action_type": action_type, "result": result}
 
     return {"action_type": action_type, "result": "Action not found"}

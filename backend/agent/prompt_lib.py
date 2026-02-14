@@ -154,22 +154,45 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
 
     If the request is unclear or requires additional information, set "need_clarification" to true and "actions" to an empty list.
     """),
-    ("user", "{user_request}"),
+    ("human", "{user_request}"),
 ])
 
 REASONING_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", ""),
-    ("user", "{description}"),
+    ("system", """You are a reasoning agent. Analyze the given information and provide logical conclusions.
+
+Previous action results: 
+{previous_results}
+
+Your task: {description}
+
+Analyze the information step by step and provide clear, logical reasoning."""),
+    ("human", "{description}"),
 ])
 
 CONTEXT_REFERENCE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", ""),
-    ("user", "{description}"),
+    ("system", """You are a context extraction agent. Extract relevant information from the conversation history.
+
+Conversation history:
+{conversation_history}
+
+Your task: {description}
+
+Extract only the information that is relevant to the task. Be concise and precise."""),
+    ("human", "{description}"),
 ])
 
 RESPONSE_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", ""),
-    ("user", "{description}"),
+    ("system", """You are a response generation agent. Create a helpful, comprehensive response for the user.
+
+Original user request: {user_request}
+
+Information gathered from previous steps:
+{previous_results}
+
+Your task: {description}
+
+Generate a clear, well-structured response that directly addresses the user's original request."""),
+    ("human", "{description}"),
 ])
 
 # prompt mapping

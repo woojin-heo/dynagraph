@@ -16,7 +16,7 @@ def planning_agent(state: AgentState,
     Planning agent function.
     """
     messages = state.get("messages", [])
-    recent_messages = messages[-10:]
+    recent_messages = messages[-10:] # last 10 messages
     previous_results = state.get("previous_results", {})
 
     # Action planning

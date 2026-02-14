@@ -1,4 +1,36 @@
 from langchain_core.prompts import ChatPromptTemplate
+from typing import List
+from .tools import TOOLS
+
+def get_tools_schema_description(tools: List) -> str:
+    """
+    Get the schema description of the tools for prompt.
+    """
+    descriptions = []
+    
+    for t in tools:
+        schema = t.args_schema.schema()
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        
+        # format parameters information
+        params_info = []
+        for param_name, param_detail in properties.items():
+            param_type = param_detail.get("type", "string")
+            param_desc = param_detail.get("description", "")
+            is_required = "required" if param_name in required else "optional"
+            params_info.append(f'"{param_name}": {param_type} ({is_required}) - {param_desc}')
+        
+        params_str = ", ".join(params_info)
+        descriptions.append(
+            f"- {t.name.upper()}: {t.description}\n"
+            f"          params: {{{params_str}}}"
+        )
+    
+    return "\n        ".join(descriptions)
+    
+
+_tools_description = get_tools_schema_description(TOOLS)
 
 PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
@@ -7,7 +39,6 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     Conversation context:
         previous conversation: {conversation_history}
         previous results available: {previous_results}
-        Currentuser request: {user_request}
     
     When planning actions, consider the following:
         1. Context awareness: Use previous conversation and results when relevant.
@@ -16,33 +47,42 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
         4. Conversation Continuity: Maintain logical flow from previous interactions.
 
     Available Action Types:
-        1. REASONING : Think through a problem, analyze information, or make logical decisions.
+
+        [LLM based actions]
+        - REASONING : Think through a problem, analyze information, or make logical decisions.
             - use when: need to process information, compare data, make decisions
             - example: "Analyze the given information and determine the best course of action."
         
-        2. CONTEXT_REFERENCE : Refer to previous conversation or results to provide context.
+        - CONTEXT_REFERENCE : Refer to previous conversation or results to provide context.
 
-        3. SEARCH_TAVILY : Get factual information from the web
-
-        4. SEARCH_WIKIPEDIA : Get factual information from Wikipedia
-        
-        5. SEARCH_DOCUMENT : Search knowledge base for specific information
-
-        6. RESPONSE_GENERATION : Generate a final response to the user.
+        - RESPONSE_GENERATION : Generate a final response to the user.
             - use when: Need to synthesize information and provide a final answer.
             - example: "summarize findings", "profide final answer with explanation"
 
-    Analyze the user request and create a sequence of actions. Each action should have:
+        [Tool based actions]
+        {tools_description}
+
+    Each action MUST have:
         - action_type: One of the available action types
         - description: What this action is intended to achieve, do not miss important details
+        - params: (Tool-based actions only) Parameters for the tool schema
         - dependencies: List of action types that must be completed before this action can be executed
         - execution_order: Sequential number of the action in the plan
+
+    Note: params are only required for tool-based actions. (SEARCH_TAVILY, SEARCH_WIKIPEDIA, SEARCH_DOCUMENT, etc.)
 
     Response format (JSON):
     {{  
         "need_clarification": false,
         "plan": "Brief description of the complete plan",
-        "actions": [...]
+        "actions": [
+            {{
+                "action_type": "ACTION_TYPE",
+                "description": "what this action does",
+                "dependencies": ["ACTION_TYPE1", "ACTION_TYPE2"],
+                "execution_order": 2
+            }}
+        ]
     }}
 
     Example 1 - Sequential Flow (Follow-up question):
@@ -81,12 +121,14 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
             {{
                 "action_type": "SEARCH_TAVILY",
                 "description": "Search the web for recent news and developments in quantum computing",
+                "params": {{"query": "quantum computing"}},
                 "dependencies": [],
                 "execution_order": 1
             }},
             {{
                 "action_type": "SEARCH_WIKIPEDIA",
                 "description": "Get foundational and factual information about quantum computing",
+                "params": {{"query": "quantum computing"}},
                 "dependencies": [],
                 "execution_order": 1
             }},
@@ -114,3 +156,30 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     """),
     ("user", "{user_request}"),
 ])
+
+REASONING_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", ""),
+    ("user", "{description}"),
+])
+
+CONTEXT_REFERENCE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", ""),
+    ("user", "{description}"),
+])
+
+RESPONSE_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", ""),
+    ("user", "{description}"),
+])
+
+# prompt mapping
+ACTION_PROMPT = {
+    # LLM based actions
+    "REASONING": REASONING_PROMPT,
+    "CONTEXT_REFERENCE": CONTEXT_REFERENCE_PROMPT,
+    "RESPONSE_GENERATION": RESPONSE_GENERATION_PROMPT,
+    # tool based actions
+    "SEARCH_TAVILY": None,
+    "SEARCH_WIKIPEDIA": None,
+    "SEARCH_DOCUMENT": None,
+}

@@ -2,9 +2,11 @@ import os
 from dotenv import load_dotenv
 from langchain_community.document_loaders import WikipediaLoader
 from langchain_tavily import TavilySearch
+from langchain_core.tools import tool
 
 load_dotenv()
 
+@tool
 def wikipedia_search(query: str, load_max_docs: int = 3) -> str:
     '''
     Search Wikipedia for the given query and return the results.
@@ -21,6 +23,7 @@ def wikipedia_search(query: str, load_max_docs: int = 3) -> str:
     ]
     return "\n\n-----\n\n".join(formatted_search_results)
 
+@tool
 def tavily_search(query: str, load_max_docs: int = 3) -> str:
     '''
     Search Tavily for the given query and return the results.
@@ -37,3 +40,6 @@ def tavily_search(query: str, load_max_docs: int = 3) -> str:
         for doc in search_docs['results']
     ]
     return "\n\n-----\n\n".join(formatted_search_results)
+
+# tools list
+TOOLS = [wikipedia_search, tavily_search]

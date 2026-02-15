@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate
 from typing import List
-from .tools import TOOLS
+from .tools.general_tools import TOOLS
 
 def get_tools_schema_description(tools: List) -> str:
     """
@@ -30,7 +30,8 @@ def get_tools_schema_description(tools: List) -> str:
     return "\n        ".join(descriptions)
     
 
-_tools_description = get_tools_schema_description(TOOLS)
+# Tools description을 invoke 시 전달할 변수로 export
+TOOLS_DESCRIPTION = get_tools_schema_description(TOOLS)
 
 PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
@@ -57,7 +58,7 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
 
         - RESPONSE_GENERATION : Generate a final response to the user.
             - use when: Need to synthesize information and provide a final answer.
-            - example: "summarize findings", "profide final answer with explanation"
+            - example: "summarize findings", "provide final answer with explanation"
 
         [Tool based actions]
         {tools_description}

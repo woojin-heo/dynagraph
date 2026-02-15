@@ -6,7 +6,7 @@ Responsible for converting user requests into a structured action plans.
 from typing import Optional, Dict, Any
 import json
 from .state import AgentState
-from .prompt_lib import PLANNING_PROMPT
+from .prompt_lib import PLANNING_PROMPT, TOOLS_DESCRIPTION
 from .runtime import LLM
 
 def planning_agent(state: AgentState,
@@ -25,6 +25,7 @@ def planning_agent(state: AgentState,
         "user_request": messages[-1].content if messages else None,
         "conversation_history": recent_messages,
         "previous_results": previous_results,
+        "tools_description": TOOLS_DESCRIPTION,
     })
 
     planning_response = json.loads(planning_result.content)

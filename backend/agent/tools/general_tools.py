@@ -41,5 +41,11 @@ def tavily_search(query: str, load_max_docs: int = 3) -> str:
     ]
     return "\n\n-----\n\n".join(formatted_search_results)
 
-# tools list
+# tools list (for schema generation)
 TOOLS = [wikipedia_search, tavily_search]
+
+# tools map (for action execution)
+TOOLS_MAP = {
+    "WIKIPEDIA_SEARCH": wikipedia_search,
+    "TAVILY_SEARCH": tavily_search,
+}

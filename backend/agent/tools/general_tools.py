@@ -46,6 +46,6 @@ TOOLS = [wikipedia_search, tavily_search]
 
 # tools map (for action execution)
 TOOLS_MAP = {
-    "WIKIPEDIA_SEARCH": wikipedia_search,
-    "TAVILY_SEARCH": tavily_search,
+    "SEARCH_WIKIPEDIA": wikipedia_search,
+    "SEARCH_TAVILY": tavily_search
 }

@@ -1,6 +1,16 @@
+"""
+Prompt Library
+
+Contains:
+- PLANNING_PROMPT: Used by planner to generate action plans
+- Helper functions for generating tool schema descriptions
+
+Note: Action-specific prompts (REASONING, CONTEXT_REFERENCE, etc.) 
+are defined in actions.py as part of the unified action registry.
+"""
 from langchain_core.prompts import ChatPromptTemplate
 from typing import List
-from .tools.general_tools import TOOLS
+
 
 def get_tools_schema_description(tools: List) -> str:
     """
@@ -9,6 +19,8 @@ def get_tools_schema_description(tools: List) -> str:
     descriptions = []
     
     for t in tools:
+        if t is None:
+            continue
         schema = t.args_schema.schema()
         properties = schema.get("properties", {})
         required = schema.get("required", [])
@@ -28,10 +40,20 @@ def get_tools_schema_description(tools: List) -> str:
         )
     
     return "\n        ".join(descriptions)
-    
 
-# Tools description을 invoke 시 전달할 변수로 export
-TOOLS_DESCRIPTION = get_tools_schema_description(TOOLS)
+
+def get_tools_description() -> str:
+    """
+    Generate tools description for planner prompt.
+    Imports from actions to avoid circular dependency at module level.
+    """
+    from .actions import get_tools_for_planner
+    tools = get_tools_for_planner()
+    return get_tools_schema_description(tools)
+
+
+# Note: This is evaluated at import time
+TOOLS_DESCRIPTION = get_tools_description()
 
 PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
@@ -157,53 +179,3 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     """),
     ("human", "{user_request}"),
 ])
-
-REASONING_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a reasoning agent. Analyze the given information and provide logical conclusions.
-
-Previous action results: 
-{previous_results}
-
-Your task: {description}
-
-Analyze the information step by step and provide clear, logical reasoning."""),
-    ("human", "{description}"),
-])
-
-CONTEXT_REFERENCE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a context extraction agent. Extract relevant information from the conversation history.
-
-Conversation history:
-{conversation_history}
-
-Your task: {description}
-
-Extract only the information that is relevant to the task. Be concise and precise."""),
-    ("human", "{description}"),
-])
-
-RESPONSE_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a response generation agent. Create a helpful, comprehensive response for the user.
-
-Original user request: {user_request}
-
-Information gathered from previous steps:
-{previous_results}
-
-Your task: {description}
-
-Generate a clear, well-structured response that directly addresses the user's original request."""),
-    ("human", "{description}"),
-])
-
-# prompt mapping
-ACTION_PROMPT = {
-    # LLM based actions
-    "REASONING": REASONING_PROMPT,
-    "CONTEXT_REFERENCE": CONTEXT_REFERENCE_PROMPT,
-    "RESPONSE_GENERATION": RESPONSE_GENERATION_PROMPT,
-    # tool based actions
-    "SEARCH_TAVILY": None,
-    "SEARCH_WIKIPEDIA": None,
-    "SEARCH_DOCUMENT": None,
-}

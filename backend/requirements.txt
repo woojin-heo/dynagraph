@@ -1,4 +1,8 @@
 langchain-community
+langchain-openai
+pypdf
+langchain-text-splitters
 wikipedia
 langchain-tavily
 python-dotenv
+psycopg2-binary

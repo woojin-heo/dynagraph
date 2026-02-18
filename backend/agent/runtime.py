@@ -45,6 +45,7 @@ class ConversationAgent:
         self._pending_user_message: Optional[str] = None
         # Thread ID for the current execution run only (new graph per run → new thread_id per run)
         self._current_thread_id: Optional[str] = None
+        self._turn_number: int = 0  # Track turn number to preserve results across turns
 
     @property
     def thread_id(self) -> Optional[str]:
@@ -59,12 +60,16 @@ class ConversationAgent:
         """Clear conversation history and cached results."""
         self.messages = []
         self.conversation_previous_results = {}
+        self._turn_number = 0
 
     def run(self, user_message: str) -> Generator[Dict[str, Any], None, None]:
         """
         Run a new turn: plan, execute, then merge this turn's results into
         conversation_previous_results and append messages.
         """
+        self._turn_number += 1
+        current_turn = self._turn_number
+        
         # State for this turn: previous messages + new user message, empty previous_results
         current_state: Dict[str, Any] = {
             "messages": self.messages + [HumanMessage(content=user_message)],
@@ -134,10 +139,15 @@ class ConversationAgent:
                 if sources and result_text and "references:" not in result_text:
                     result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
                 
-                self.conversation_previous_results = {
-                    **self.conversation_previous_results,
-                    **prev,
-                }
+                # Merge results preserving all turns: store as lists per action_type
+                for action_type, result in prev.items():
+                    if action_type not in self.conversation_previous_results:
+                        self.conversation_previous_results[action_type] = []
+                    # Append new result with turn number
+                    self.conversation_previous_results[action_type].append({
+                        "turn": current_turn,
+                        "result": result
+                    })
                 self.messages = self.messages + [
                     HumanMessage(content=user_message),
                     AIMessage(content=result_text),
@@ -181,7 +191,7 @@ class ConversationAgent:
         Resume execution after human review (HITL mode).
         Call after run() yielded status="paused".
         """
-        if not self.current_graph or not self._current_thread_id:
+        if not self.current_graph or not self.thread_id:
             yield {"status": "error", "message": "No paused execution to resume"}
             return
         if self._pending_user_message is None:
@@ -203,10 +213,17 @@ class ConversationAgent:
                     if sources and result_text and "references:" not in result_text:
                         result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
                     
-                    self.conversation_previous_results = {
-                        **self.conversation_previous_results,
-                        **prev,
-                    }
+                    # Merge results preserving all turns: store as lists per action_type
+                    # Note: resume() uses the same turn number as the original run()
+                    current_turn = self._turn_number
+                    for action_type, result in prev.items():
+                        if action_type not in self.conversation_previous_results:
+                            self.conversation_previous_results[action_type] = []
+                        # Append new result with turn number
+                        self.conversation_previous_results[action_type].append({
+                            "turn": current_turn,
+                            "result": result
+                        })
                     self.messages = self.messages + [
                         HumanMessage(content=user_message),
                         AIMessage(content=result_text),

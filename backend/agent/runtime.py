@@ -1,10 +1,20 @@
-from typing import Dict, Any, Optional, Generator
+import re
+from typing import Dict, Any, Optional, Generator, List
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from dotenv import load_dotenv
 import uuid
 
 load_dotenv()
+
+
+def _sources_from_search_document_result(text: str) -> List[str]:
+    """Extract unique document source names from SEARCH_DOCUMENT output (e.g. source=\"file.pdf\")."""
+    if not text or "Error" in text or "No matching" in text:
+        return []
+    # Match source="..." in <Document source="..." ...>
+    names = re.findall(r'source="([^"]+)"', text)
+    return list(dict.fromkeys(names))  # preserve order, dedupe
 
 LLM = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
@@ -19,59 +29,68 @@ from .graph import (
 )
 
 
-class AgentRunner:
+class ConversationAgent:
     """
-    Agent runner with support for streaming and human-in-the-loop.
+    Agent that maintains conversation history and caches previous action results
+    across turns so the planner can reuse them (e.g. CONTEXT_REFERENCE instead of re-running SEARCH_DOCUMENT).
+    Supports optional HITL (human-in-the-loop) via resume().
     """
     
-    def __init__(self, enable_hitl: bool = False, hitl_before: list = None):
-        """
-        Args:
-            enable_hitl: Enable human-in-the-loop mode.
-            hitl_before: List of action types to pause before (e.g., ["RESPONSE_GENERATION"]).
-        """
+    def __init__(self, enable_hitl: bool = False, hitl_before: Optional[List[str]] = None):
+        self.messages: List[BaseMessage] = []
+        self.conversation_previous_results: Dict[str, Any] = {}
         self.enable_hitl = enable_hitl
         self.hitl_before = hitl_before or []
         self.current_graph = None
-        self.current_thread_id = None
-        self.current_state = None
+        self._pending_user_message: Optional[str] = None
+        # Thread ID for the current execution run only (new graph per run → new thread_id per run)
+        self._current_thread_id: Optional[str] = None
+
+    @property
+    def thread_id(self) -> Optional[str]:
+        """Thread ID for the current execution run (None when no run is active)."""
+        return self._current_thread_id
+
+    def get_conversation_history(self) -> List[BaseMessage]:
+        """Return current conversation history."""
+        return list(self.messages)
     
+    def clear_history(self) -> None:
+        """Clear conversation history and cached results."""
+        self.messages = []
+        self.conversation_previous_results = {}
+
     def run(self, user_message: str) -> Generator[Dict[str, Any], None, None]:
         """
-        Run the agent with streaming output.
-        
-        Args:
-            user_message: User's input message.
-        
-        Yields:
-            Progress updates for each step.
+        Run a new turn: plan, execute, then merge this turn's results into
+        conversation_previous_results and append messages.
         """
-        self.current_thread_id = str(uuid.uuid4())
-        
-        # Initial state
-        self.current_state = {
-            "messages": [HumanMessage(content=user_message)],
+        # State for this turn: previous messages + new user message, empty previous_results
+        current_state: Dict[str, Any] = {
+            "messages": self.messages + [HumanMessage(content=user_message)],
             "previous_results": {},
             "need_clarification": False,
             "plan": "",
             "actions": [],
         }
         
-        # Phase 1: Planning
+
         yield {"phase": "planning", "status": "running"}
         
-        planner_result = planning_agent(self.current_state)
-        self.current_state.update(planner_result)
+        planner_result = planning_agent(
+            current_state,
+            conversation_previous_results=self.conversation_previous_results,
+        )
+        current_state.update(planner_result)
         
         yield {
             "phase": "planning",
             "status": "complete",
-            "plan": self.current_state.get("plan", ""),
-            "actions": self.current_state.get("actions", []),
+            "plan": current_state.get("plan", ""),
+            "actions": current_state.get("actions", []),
         }
         
-        # Check if clarification is needed
-        if self.current_state.get("need_clarification"):
+        if current_state.get("need_clarification"):
             yield {
                 "phase": "clarification",
                 "status": "waiting",
@@ -79,8 +98,7 @@ class AgentRunner:
             }
             return
         
-        # Phase 2: Execution
-        actions = self.current_state.get("actions", [])
+        actions = current_state.get("actions", [])
         if not actions:
             yield {
                 "phase": "execution",
@@ -89,74 +107,117 @@ class AgentRunner:
             }
             return
         
-        # Create execution graph
-        self.current_graph, checkpointer = create_execution_graph(
+        graph, _ = create_execution_graph(
             actions,
             enable_hitl=self.enable_hitl,
             hitl_before=self.hitl_before,
         )
-        
-        if not self.current_graph:
+        if not graph:
             yield {"phase": "execution", "status": "error", "message": "Failed to create graph"}
             return
         
+        self.current_graph = graph
+        self._current_thread_id = str(uuid.uuid4())
         yield {"phase": "execution", "status": "running"}
         
-        # Stream execution
-        for step in stream_execution(self.current_graph, self.current_state, self.current_thread_id):
+        completed = False
+        for step in stream_execution(graph, current_state, self._current_thread_id):
             if step.get("status") == "complete":
-                # Get final state from checkpointer (always available)
-                final_state = get_current_state(self.current_graph, self.current_thread_id)
+                final_state = get_current_state(graph, self._current_thread_id)
                 if final_state:
-                    self.current_state.update(final_state)
+                    current_state.update(final_state)
                 
+                prev = current_state.get("previous_results", {})
+                result_text = prev.get("RESPONSE_GENERATION", "")
+                search_result = prev.get("SEARCH_DOCUMENT", "")
+                sources = _sources_from_search_document_result(search_result)
+                if sources and result_text and "references:" not in result_text:
+                    result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
+                
+                self.conversation_previous_results = {
+                    **self.conversation_previous_results,
+                    **prev,
+                }
+                self.messages = self.messages + [
+                    HumanMessage(content=user_message),
+                    AIMessage(content=result_text),
+                ]
+                completed = True
                 yield {
                     "phase": "execution",
                     "status": "complete",
-                    "result": self.current_state.get("previous_results", {}).get("RESPONSE_GENERATION", ""),
-                    "all_results": self.current_state.get("previous_results", {}),
+                    "result": result_text,
+                    "all_results": prev,
                 }
             else:
-                # Update current state from checkpointer (always available)
-                current = get_current_state(self.current_graph, self.current_thread_id)
+                current = get_current_state(graph, self._current_thread_id)
                 if current:
-                    self.current_state.update(current)
-                
+                    current_state.update(current)
                 yield {
                     "phase": "execution",
                     "node": step.get("node"),
                     "output": step.get("output"),
                     "status": "running",
                 }
-    
+        
+        # HITL: if we exited without complete, check if paused
+        if not completed and self.current_graph:
+            try:
+                graph_state = self.current_graph.get_state(
+                    {"configurable": {"thread_id": self._current_thread_id}}
+                )
+                if graph_state and graph_state.tasks:
+                    self._pending_user_message = user_message
+                    yield {
+                        "phase": "execution",
+                        "status": "paused",
+                        "message": "Execution paused for human review. Call agent.resume() to continue.",
+                    }
+            except Exception:
+                pass
+
     def resume(self, human_feedback: Optional[Dict[str, Any]] = None) -> Generator[Dict[str, Any], None, None]:
         """
         Resume execution after human review (HITL mode).
-        
-        Args:
-            human_feedback: Optional feedback/modifications from human.
-        
-        Yields:
-            Progress updates for remaining steps.
+        Call after run() yielded status="paused".
         """
-        if not self.current_graph or not self.current_thread_id:
+        if not self.current_graph or not self._current_thread_id:
             yield {"status": "error", "message": "No paused execution to resume"}
             return
+        if self._pending_user_message is None:
+            yield {"status": "error", "message": "No pending user message"}
+            return
         
+        user_message = self._pending_user_message
         yield {"phase": "execution", "status": "resuming"}
         
-        for step in resume_execution(self.current_graph, self.current_thread_id, human_feedback):
+        current_state = None
+        for step in resume_execution(self.current_graph, self._current_thread_id, human_feedback):
             if step.get("status") == "complete":
-                final_state = get_current_state(self.current_graph, self.current_thread_id)
-                if final_state:
-                    self.current_state.update(final_state)
-                
-                yield {
-                    "phase": "execution",
-                    "status": "complete",
-                    "result": self.current_state.get("previous_results", {}).get("RESPONSE_GENERATION", ""),
-                    "all_results": self.current_state.get("previous_results", {}),
-                }
+                current_state = get_current_state(self.current_graph, self._current_thread_id)
+                if current_state:
+                    prev = current_state.get("previous_results", {})
+                    result_text = prev.get("RESPONSE_GENERATION", "")
+                    search_result = prev.get("SEARCH_DOCUMENT", "")
+                    sources = _sources_from_search_document_result(search_result)
+                    if sources and result_text and "references:" not in result_text:
+                        result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
+                    
+                    self.conversation_previous_results = {
+                        **self.conversation_previous_results,
+                        **prev,
+                    }
+                    self.messages = self.messages + [
+                        HumanMessage(content=user_message),
+                        AIMessage(content=result_text),
+                    ]
+                    self._pending_user_message = None
+                    yield {
+                        "phase": "execution",
+                        "status": "complete",
+                        "result": result_text,
+                        "all_results": prev,
+                    }
             else:
                 yield {
                     "phase": "execution",
@@ -164,27 +225,64 @@ class AgentRunner:
                     "output": step.get("output"),
                     "status": "running",
                 }
-    
-    def get_state(self) -> Optional[Dict[str, Any]]:
-        """Get current state."""
-        return self.current_state
 
 
-# Simple function for basic usage (no HITL)
 def run_agent(user_message: str) -> Dict[str, Any]:
     """
-    Run the agent and return final result (non-streaming).
-    
-    Args:
-        user_message: User's input message.
-    
-    Returns:
-        Final result dict.
+    Run the agent for one turn and return final result (non-streaming).
+    Uses ConversationAgent internally; each call is a fresh conversation.
     """
-    runner = AgentRunner(enable_hitl=False)
+    agent = ConversationAgent(enable_hitl=False)
     result = None
-    
-    for step in runner.run(user_message):
+    for step in agent.run(user_message):
         result = step
-    
     return result
+
+
+def run_agent_with_hitl(
+    user_message: str, 
+    hitl_before: Optional[List[str]] = None,
+    human_feedback: Optional[Dict[str, Any]] = None,
+) -> Generator[Dict[str, Any], None, None]:
+    """
+    Run the agent with HITL enabled. Yields each step (planning, execution nodes, paused, complete).
+    The last yielded value is the final result (phase="execution", status="complete", result="...").
+    When paused, waits for input(); type 'resume' or 'r' to continue.
+    """
+    if hitl_before is None:
+        hitl_before = ["RESPONSE_GENERATION"]
+    
+    agent = ConversationAgent(enable_hitl=True, hitl_before=hitl_before)
+    first_run = True
+    
+    while True:
+        inner_gen = agent.run(user_message) if first_run else agent.resume(human_feedback)
+        first_run = False
+        completed = False
+        for step in inner_gen:
+            yield step
+            if step.get("phase") == "execution" and step.get("status") == "complete":
+                completed = True
+                return
+        
+        if not completed and agent.current_graph:
+            try:
+                graph_state = agent.current_graph.get_state(
+                    {"configurable": {"thread_id": agent.thread_id}}
+                )
+                if graph_state and graph_state.tasks:
+                    yield {
+                        "phase": "execution",
+                        "status": "paused",
+                        "message": "Execution paused for human review. Type 'resume' or 'r' to continue.",
+                    }
+                    print("\n[Paused] Execution paused for human review. Type 'resume' or 'r' to continue.")
+                    while True:
+                        user_input = input("[Paused] Enter 'resume' or 'r' to continue: ").strip().lower()
+                        if user_input in ['resume', 'r']:
+                            break
+                        print("Invalid input. Please type 'resume' or 'r'.")
+                    continue
+            except Exception:
+                pass
+        return

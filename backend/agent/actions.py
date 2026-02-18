@@ -62,7 +62,9 @@ User's original request: {user_request}
 Previous results from other actions:
 {previous_results}
 
-Generate a clear, well-structured response that directly addresses the user's original request."""),
+Generate a clear, well-structured response that directly addresses the user's original request.
+
+If your response is based on internal documents (SEARCH_DOCUMENT results), you must cite the sources at the end of your response. Format: "references: source1, source2" (list the document source names that appear in the Document tags above). If no document search was used, do not add this line."""),
     ("human", "{description}"),
 ])
 

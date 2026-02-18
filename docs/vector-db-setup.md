@@ -62,17 +62,21 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     metadata    JSONB DEFAULT '{}',
     created_at  TIMESTAMPTZ DEFAULT now()
 );
-
--- Optional: index for faster similarity search when the table has many rows
-CREATE INDEX IF NOT EXISTS document_chunks_embedding_idx
-ON document_chunks
-USING ivfflat (embedding vector_cosine_ops)
-WITH (lists = 100);
 ```
 
 - **embedding**: `vector(1536)` matches OpenAI `text-embedding-3-small`. For another model, change the dimension (e.g. `vector(3072)` for `text-embedding-3-large`).
 - **content**: Chunk text used for display and search context.
 - **source**, **chunk_index**, **metadata**: Optional; useful for filtering and tracing back to original documents.
+
+### If vector search returns poor or wrong results
+
+An **ivfflat** index on the embedding column can sometimes cause vector similarity search to return incorrect or missing results. If you previously created that index (or followed an older version of this doc that included it), drop it:
+
+```sql
+DROP INDEX IF EXISTS public.document_chunks_embedding_idx;
+```
+
+After dropping, search uses a sequential scan over the table and typically returns correct results. For small to moderate chunk counts this is acceptable; only consider adding an index again if you have very large scale and have verified it does not degrade result quality.
 
 ## 4. Verify connection and table
 
@@ -148,7 +152,7 @@ After indexing, the agent’s `SEARCH_DOCUMENT` action will return these chunks 
 | 1 | Install PostgreSQL and pgvector (version-matched). |
 | 2 | Run `CREATE EXTENSION vector;` in the target database. |
 | 3 | Set `DATABASE_URL` in `.env`. |
-| 4 | Create `document_chunks` (and optional ivfflat index). |
+| 4 | Create `document_chunks` table (do not create ivfflat index; see “If vector search returns poor or wrong results” above if search fails). |
 | 5 | Verify with `db_connection_example.ipynb` and/or pgAdmin. |
 | 6 | Index documents with `backend.db.rag_indexing` (see section 6). |
 

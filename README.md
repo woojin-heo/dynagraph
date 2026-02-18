@@ -27,6 +27,10 @@ Organizations need AI systems that leverage shared infrastructure for efficiency
 
 ```
 
+### Technical details
+
+Conversation memory, session/thread management, and RAG retrieval are described for implementers and maintainers in **[Technical Architecture](docs/technical-architecture.md)**. For vector DB setup and document indexing, see [Vector DB Setup](docs/vector-db-setup.md).
+
 ### Usecases
 
 

@@ -126,16 +126,21 @@ def create_execution_graph(
 
     # Always use checkpointer for state tracking and debugging
     checkpointer = MemorySaver()
-    
-    if enable_hitl:
-        interrupt_nodes = hitl_before or []
-        compiled = graph.compile(
-            checkpointer=checkpointer,
-            interrupt_before=interrupt_nodes,
-        )
+
+    node_names_in_graph = {a.get("action_type", "unknown") for a in sorted_actions}
+    if enable_hitl and hitl_before:
+        # Only interrupt before nodes that exist in this run's graph (e.g. CONTEXT_REFERENCE-only turn has no SEARCH_DOCUMENT)
+        interrupt_nodes = [n for n in hitl_before if n in node_names_in_graph]
+        if interrupt_nodes:
+            compiled = graph.compile(
+                checkpointer=checkpointer,
+                interrupt_before=interrupt_nodes,
+            )
+        else:
+            compiled = graph.compile(checkpointer=checkpointer)
     else:
         compiled = graph.compile(checkpointer=checkpointer)
-    
+
     return compiled, checkpointer
 
 

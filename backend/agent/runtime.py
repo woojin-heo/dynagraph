@@ -22,11 +22,12 @@ LLM = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 from .state import AgentState
 from .planner import planning_agent
 from .graph import (
-    create_execution_graph, 
-    stream_execution, 
+    create_execution_graph,
+    stream_execution,
     resume_execution,
     get_current_state,
 )
+from . import hitl
 
 
 class ConversationAgent:
@@ -38,7 +39,8 @@ class ConversationAgent:
     
     def __init__(self, enable_hitl: bool = False, hitl_before: Optional[List[str]] = None):
         self.messages: List[BaseMessage] = []
-        self.conversation_previous_results: Dict[str, Any] = {}
+        # Turn-based cache: [{"turn": N, "plan": "...", "need_clarification": bool, "actions": [{...action, "result": "..."}, ...]}, ...]
+        self.conversation_previous_results: List[Dict[str, Any]] = []
         self.enable_hitl = enable_hitl
         self.hitl_before = hitl_before or []
         self.current_graph = None
@@ -59,8 +61,57 @@ class ConversationAgent:
     def clear_history(self) -> None:
         """Clear conversation history and cached results."""
         self.messages = []
-        self.conversation_previous_results = {}
+        self.conversation_previous_results = []
         self._turn_number = 0
+
+    def _process_execution_steps(
+        self,
+        step_iterator,
+        current_state: Dict[str, Any],
+        user_message: str,
+        current_turn: int,
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Delegate to hitl.process_execution_steps (shared by run and resume)."""
+        def set_pending(msg: str) -> None:
+            self._pending_user_message = msg
+
+        yield from hitl.process_execution_steps(
+            step_iterator,
+            current_state,
+            user_message,
+            get_current_state_fn=get_current_state,
+            graph=self.current_graph,
+            thread_id=self._current_thread_id,
+            hitl_before=self.hitl_before,
+            set_pending_message=set_pending,
+            sources_from_search_fn=_sources_from_search_document_result,
+        )
+
+    def _append_turn_results(
+        self, current_state: Dict[str, Any], user_message: str, current_turn: int
+    ) -> None:
+        """Append this turn's results and messages (on true completion)."""
+        prev = current_state.get("previous_results", {})
+        actions = current_state.get("actions", [])
+        actions_with_results = [
+            {**action, "result": prev.get(action.get("action_type", ""), "")}
+            for action in actions
+        ]
+        self.conversation_previous_results.append({
+            "turn": current_turn,
+            "plan": current_state.get("plan", ""),
+            "need_clarification": current_state.get("need_clarification", False),
+            "actions": actions_with_results,
+        })
+        result_text = prev.get("RESPONSE_GENERATION", "")
+        search_result = prev.get("SEARCH_DOCUMENT", "")
+        sources = _sources_from_search_document_result(search_result)
+        if sources and result_text and "references:" not in result_text:
+            result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
+        self.messages = self.messages + [
+            HumanMessage(content=user_message),
+            AIMessage(content=result_text),
+        ]
 
     def run(self, user_message: str) -> Generator[Dict[str, Any], None, None]:
         """
@@ -124,72 +175,27 @@ class ConversationAgent:
         self.current_graph = graph
         self._current_thread_id = str(uuid.uuid4())
         yield {"phase": "execution", "status": "running"}
-        
-        completed = False
-        for step in stream_execution(graph, current_state, self._current_thread_id):
-            if step.get("status") == "complete":
-                final_state = get_current_state(graph, self._current_thread_id)
-                if final_state:
-                    current_state.update(final_state)
-                
-                prev = current_state.get("previous_results", {})
-                result_text = prev.get("RESPONSE_GENERATION", "")
-                search_result = prev.get("SEARCH_DOCUMENT", "")
-                sources = _sources_from_search_document_result(search_result)
-                if sources and result_text and "references:" not in result_text:
-                    result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
-                
-                # Merge results preserving all turns: store as lists per action_type
-                for action_type, result in prev.items():
-                    if action_type not in self.conversation_previous_results:
-                        self.conversation_previous_results[action_type] = []
-                    # Append new result with turn number
-                    self.conversation_previous_results[action_type].append({
-                        "turn": current_turn,
-                        "result": result
-                    })
-                self.messages = self.messages + [
-                    HumanMessage(content=user_message),
-                    AIMessage(content=result_text),
-                ]
-                completed = True
-                yield {
-                    "phase": "execution",
-                    "status": "complete",
-                    "result": result_text,
-                    "all_results": prev,
-                }
-            else:
-                current = get_current_state(graph, self._current_thread_id)
-                if current:
-                    current_state.update(current)
-                yield {
-                    "phase": "execution",
-                    "node": step.get("node"),
-                    "output": step.get("output"),
-                    "status": "running",
-                }
-        
-        # HITL: if we exited without complete, check if paused
-        if not completed and self.current_graph:
-            try:
-                graph_state = self.current_graph.get_state(
-                    {"configurable": {"thread_id": self._current_thread_id}}
-                )
-                if graph_state and graph_state.tasks:
-                    self._pending_user_message = user_message
-                    yield {
-                        "phase": "execution",
-                        "status": "paused",
-                        "message": "Execution paused for human review. Call agent.resume() to continue.",
-                    }
-            except Exception:
-                pass
+
+        for event in self._process_execution_steps(
+            stream_execution(graph, current_state, self._current_thread_id),
+            current_state,
+            user_message,
+            current_turn,
+        ):
+            if event.get("status") == "complete":
+                self._append_turn_results(current_state, user_message, current_turn)
+                yield event
+                return
+            if event.get("status") == "paused":
+                yield event
+                return
+            yield event
 
     def resume(self, human_feedback: Optional[Dict[str, Any]] = None) -> Generator[Dict[str, Any], None, None]:
         """
         Resume execution after human review (HITL mode).
-        Call after run() yielded status="paused".
+        Call after run() yielded status="paused". May yield status="paused" again if
+        another interrupt_before node is hit; call resume() again to continue.
         """
         if not self.current_graph or not self.thread_id:
             yield {"status": "error", "message": "No paused execution to resume"}
@@ -197,51 +203,30 @@ class ConversationAgent:
         if self._pending_user_message is None:
             yield {"status": "error", "message": "No pending user message"}
             return
-        
+
         user_message = self._pending_user_message
+        current_state = get_current_state(self.current_graph, self._current_thread_id)
+        if not current_state:
+            yield {"status": "error", "message": "Could not load state for resume"}
+            return
+
         yield {"phase": "execution", "status": "resuming"}
-        
-        current_state = None
-        for step in resume_execution(self.current_graph, self._current_thread_id, human_feedback):
-            if step.get("status") == "complete":
-                current_state = get_current_state(self.current_graph, self._current_thread_id)
-                if current_state:
-                    prev = current_state.get("previous_results", {})
-                    result_text = prev.get("RESPONSE_GENERATION", "")
-                    search_result = prev.get("SEARCH_DOCUMENT", "")
-                    sources = _sources_from_search_document_result(search_result)
-                    if sources and result_text and "references:" not in result_text:
-                        result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
-                    
-                    # Merge results preserving all turns: store as lists per action_type
-                    # Note: resume() uses the same turn number as the original run()
-                    current_turn = self._turn_number
-                    for action_type, result in prev.items():
-                        if action_type not in self.conversation_previous_results:
-                            self.conversation_previous_results[action_type] = []
-                        # Append new result with turn number
-                        self.conversation_previous_results[action_type].append({
-                            "turn": current_turn,
-                            "result": result
-                        })
-                    self.messages = self.messages + [
-                        HumanMessage(content=user_message),
-                        AIMessage(content=result_text),
-                    ]
-                    self._pending_user_message = None
-                    yield {
-                        "phase": "execution",
-                        "status": "complete",
-                        "result": result_text,
-                        "all_results": prev,
-                    }
-            else:
-                yield {
-                    "phase": "execution",
-                    "node": step.get("node"),
-                    "output": step.get("output"),
-                    "status": "running",
-                }
+
+        for event in self._process_execution_steps(
+            resume_execution(self.current_graph, self._current_thread_id, human_feedback),
+            current_state,
+            user_message,
+            self._turn_number,
+        ):
+            if event.get("status") == "complete":
+                self._append_turn_results(current_state, user_message, self._turn_number)
+                self._pending_user_message = None
+                yield event
+                return
+            if event.get("status") == "paused":
+                yield event
+                return
+            yield event
 
 
 def run_agent(user_message: str) -> Dict[str, Any]:

@@ -3,52 +3,84 @@ Planning agent module.
 
 Responsible for converting user requests into a structured action plans.
 """
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Union
 import json
 from .state import AgentState
 from .prompt_lib import PLANNING_PROMPT, TOOLS_DESCRIPTION, get_available_documents
 from .runtime import LLM
 
-def _format_conversation_previous_results(results: Dict[str, Any]) -> str:
+def _format_conversation_previous_results(
+    results: Union[List[Dict[str, Any]], Dict[str, Any]]
+) -> str:
     """Format conversation_previous_results for the planner prompt (truncate long values).
-    
-    Results can be either:
-    - Old format: {"SEARCH_DOCUMENT": "result"} (for backward compatibility)
-    - New format: {"SEARCH_DOCUMENT": [{"turn": 1, "result": "..."}, {"turn": 2, "result": "..."}]}
+
+    Preferred format (plan shape + results per action, per turn):
+      [{"turn": 1, "plan": "...", "need_clarification": false, "actions": [{action_type, description, ..., "result": "..."}, ...]}, ...]
     """
     if not results:
         return "(None)"
     lines = []
-    for k, v in results.items():
-        if isinstance(v, list):
-            # New format: list of turn results
-            turn_results = []
-            for item in v:
-                if isinstance(item, dict) and "turn" in item and "result" in item:
-                    turn_num = item["turn"]
-                    result = str(item["result"])
-                    if len(result) > 300:
-                        result = result[:300] + "... [truncated]"
-                    turn_results.append(f"  Turn {turn_num}: {result}")
-                else:
-                    # Fallback for unexpected format
-                    turn_results.append(f"  {str(item)[:300]}")
-            if turn_results:
-                lines.append(f"- {k} (from {len(v)} turn(s)):")
-                lines.extend(turn_results)
-        else:
-            # Old format: direct value (for backward compatibility)
-            s = str(v)
-            if len(s) > 500:
-                s = s[:500] + "... [truncated]"
-            lines.append(f"- {k}: {s}")
+    if isinstance(results, list):
+        for entry in results:
+            if not isinstance(entry, dict) or "turn" not in entry:
+                continue
+            turn_num = entry["turn"]
+            lines.append(f"--- Turn {turn_num} ---")
+            # New format: plan + actions with result
+            if "plan" in entry:
+                plan = str(entry.get("plan", ""))
+                if plan:
+                    lines.append(f"  plan: {plan[:400]}{'...' if len(plan) > 400 else ''}")
+                if entry.get("need_clarification"):
+                    lines.append("  (clarification was requested)")
+            if "actions" in entry and isinstance(entry["actions"], list):
+                for action in entry["actions"]:
+                    if not isinstance(action, dict):
+                        continue
+                    atype = action.get("action_type", "?")
+                    desc = action.get("description", "")
+                    if desc and len(desc) > 120:
+                        desc = desc[:120] + "..."
+                    result = action.get("result", "")
+                    if len(result) > 400:
+                        result = result[:400] + "... [truncated]"
+                    lines.append(f"  {atype}: {desc}")
+                    if result:
+                        lines.append(f"    result: {result}")
+            # Legacy format: contents (action_type -> result)
+            elif "contents" in entry and isinstance(entry["contents"], dict):
+                for action_type, value in entry["contents"].items():
+                    s = str(value)
+                    if len(s) > 500:
+                        s = s[:500] + "... [truncated]"
+                    lines.append(f"  {action_type}: {s}")
+            lines.append("")
+        if lines and lines[-1] == "":
+            lines.pop()
+    else:
+        # Legacy dict format (action_type -> value or list of {turn, result})
+        for k, v in results.items():
+            if isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict) and "turn" in item and "result" in item:
+                        s = str(item["result"])
+                        if len(s) > 300:
+                            s = s[:300] + "... [truncated]"
+                        lines.append(f"- {k} (Turn {item['turn']}): {s}")
+                    else:
+                        lines.append(f"- {k}: {str(item)[:300]}")
+            else:
+                s = str(v)
+                if len(s) > 500:
+                    s = s[:500] + "... [truncated]"
+                lines.append(f"- {k}: {s}")
     return "\n".join(lines)
 
 
 def planning_agent(state: AgentState,
                    llm=LLM,
                    config: Optional[Dict[str, Any]] = None,
-                   conversation_previous_results: Optional[Dict[str, Any]] = None) -> AgentState:
+                   conversation_previous_results: Optional[Union[List[Dict[str, Any]], Dict[str, Any]]] = None) -> AgentState:
     """
     Planning agent function.
     """

@@ -20,6 +20,9 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
     action_type = action.get('action_type', 'unknown')
     description = action.get('description', '')
     params = action.get('params', {})
+    # Apply HITL param overrides (from resume(human_feedback))
+    overrides = state.get('human_param_overrides', {}).get(action_type, {})
+    params = {**params, **overrides}
 
     conversation_history = state.get('messages', [])[-10:]
     previous_results = state.get('previous_results', {})
@@ -185,13 +188,20 @@ def resume_execution(
     Args:
         graph: Compiled execution graph (with checkpointer).
         thread_id: Thread ID to resume.
-        human_input: Optional modifications from human review.
-    
+    human_input: Optional modifications from human review.
+        Use {"param_overrides": {"ACTION_TYPE": {"param_key": "value"}}} to override
+        params for pending nodes (e.g. {"param_overrides": {"SEARCH_TAVILY": {"query": "new query"}}}).
+
     Yields:
         Dict with node_name and result for each step.
     """
     config = {"configurable": {"thread_id": thread_id}}
-    
+
+    if human_input:
+        param_overrides = human_input.get("param_overrides", human_input)
+        if param_overrides:
+            graph.update_state(config, {"human_param_overrides": param_overrides})
+
     # Resume with None to continue from checkpoint
     for step in graph.stream(None, config):
         for node_name, node_output in step.items():

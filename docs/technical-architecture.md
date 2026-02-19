@@ -10,6 +10,7 @@ This document describes implementation details for conversation memory, session 
 
 - **State shape**: Conversation history is stored in `AgentState.messages` (`backend/agent/state.py`). The field is typed as `Annotated[List[BaseMessage], add_messages]`, so LangGraph’s `add_messages` reducer is used when multiple nodes update `messages` (e.g. appending assistant turns).
 - **Scope**: When using **ConversationAgent**, memory is in-memory and **scoped to the agent instance**: `messages` and `conversation_previous_results` are accumulated across `agent.run()` calls. When using **run_agent()**, each call creates a new ConversationAgent, so there is no persistence across calls.
+- **Turn-based cache**: `conversation_previous_results` keeps the planner’s plan shape and attaches execution results per turn: `[{"turn": 1, "plan": "...", "need_clarification": false, "actions": [{"action_type": "...", "description": "...", "dependencies": [...], "execution_order": N, "result": "..."}, ...]}, ...]`. This makes it easy to see “what was the plan for turn N” and “what was the result of each action” when planning (e.g. for CONTEXT_REFERENCE).
 
 ### How it’s used
 
@@ -38,6 +39,7 @@ This document describes implementation details for conversation memory, session 
 - **ConversationAgent** creates a **new thread ID per execution run** (`self._current_thread_id = str(uuid.uuid4())` at the start of each `run()` in `backend/agent/runtime.py`). Each turn builds a new graph, so using a new thread_id per run avoids mixing checkpointer state across different graphs. The same thread_id is used only for that run’s `stream_execution` and, if paused, for `resume_execution`.
 - The **execution graph** is compiled with a **LangGraph checkpointer** (`MemorySaver()` in `graph.py`). When streaming or resuming, the code passes `config = {"configurable": {"thread_id": thread_id}}` so LangGraph can load/save state for that thread.
 - **Purpose**: The thread ID allows **human-in-the-loop (HITL)** to pause and later **resume** the same run via `resume_execution(graph, self.current_thread_id, human_feedback)`. The checkpointer stores the graph state (including `previous_results`, etc.) keyed by `thread_id`.
+- **HITL parameter editing**: When paused, the client receives `pending_actions` (each with `action_type`, `description`, `params`). The user can edit params and call `agent.resume(human_feedback)` with `human_feedback = {"param_overrides": {"ACTION_TYPE": {"param_key": "value"}}}` (e.g. `{"param_overrides": {"SEARCH_TAVILY": {"query": "new query"}}}`). `resume_execution` writes this into state as `human_param_overrides` via `graph.update_state`; `action_executor` merges these overrides into each action’s `params` before running.
 
 ### Persistence and scope
 

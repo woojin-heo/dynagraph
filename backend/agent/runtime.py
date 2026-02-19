@@ -93,10 +93,17 @@ class ConversationAgent:
         """Append this turn's results and messages (on true completion)."""
         prev = current_state.get("previous_results", {})
         actions = current_state.get("actions", [])
-        actions_with_results = [
-            {**action, "result": prev.get(action.get("action_type", ""), "")}
-            for action in actions
-        ]
+        overrides = current_state.get("human_param_overrides", {})
+        actions_with_results = []
+        for action in actions:
+            action_type = action.get("action_type", "")
+            params = action.get("params", {})
+            merged_params = {**params, **overrides.get(action_type, {})}
+            actions_with_results.append({
+                **action,
+                "params": merged_params,
+                "result": prev.get(action_type, ""),
+            })
         self.conversation_previous_results.append({
             "turn": current_turn,
             "plan": current_state.get("plan", ""),

@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Dict, Any, Annotated
+from typing import TypedDict, List, Dict, Any, Annotated, NotRequired
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 
@@ -33,3 +33,5 @@ class AgentState(TypedDict):
     need_clarification: bool
     plan: str
     actions: List[Dict[str, Any]]
+    # HITL: param overrides per action_type (set on resume from human_input)
+    human_param_overrides: NotRequired[Dict[str, Dict[str, Any]]]

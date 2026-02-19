@@ -64,7 +64,7 @@ Previous results from other actions:
 
 Generate a clear, well-structured response that directly addresses the user's original request.
 
-If your response is based on internal documents (SEARCH_DOCUMENT results), you must cite the sources at the end of your response. Format: "references: source1, source2" (list the document source names that appear in the Document tags above). If no document search was used, do not add this line."""),
+References rule: Add "references: source1, source2" at the end of your response ONLY when SEARCH_DOCUMENT was executed in this turn (i.e. "Previous results from other actions" above contains SEARCH_DOCUMENT output with <Document source="..."> tags). List the document source names from those tags. Do NOT add a references line when the response is based only on CONTEXT_REFERENCE, REASONING, or other actions—even if the content originally came from documents in a previous turn. In those cases, omit the references line entirely."""),
     ("human", "{description}"),
 ])
 

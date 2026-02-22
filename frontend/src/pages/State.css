@@ -1,0 +1,41 @@
+.state-page {
+  padding-bottom: 2rem;
+}
+.state-nav {
+  margin-bottom: 1rem;
+}
+.state-nav a,
+.state-nav .link-btn {
+  color: #a1a1aa;
+  font-size: 0.875rem;
+}
+.state-nav .link-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.state-nav .link-btn:hover {
+  color: #fff;
+}
+.state-page h1 {
+  font-size: 1.25rem;
+  margin: 0 0 0.5rem 0;
+}
+.state-json {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.muted {
+  color: #71717a;
+  margin: 0 0 1rem 0;
+  font-size: 0.875rem;
+}

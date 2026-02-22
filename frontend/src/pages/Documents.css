@@ -1,0 +1,36 @@
+.doc-section {
+  margin-bottom: 2rem;
+}
+.doc-section:last-child {
+  margin-bottom: 0;
+}
+.documents-page h1 {
+  font-size: 1.25rem;
+  margin: 0 0 1rem 0;
+}
+.doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #18181b;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #27272a;
+}
+.doc-table th,
+.doc-table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid #27272a;
+}
+.doc-table th {
+  background: #27272a;
+  color: #a1a1aa;
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+.doc-table tr:last-child td {
+  border-bottom: none;
+}
+.muted {
+  color: #71717a;
+}

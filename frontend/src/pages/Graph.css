@@ -1,0 +1,191 @@
+.graph-page {
+  padding-bottom: 2rem;
+}
+.graph-nav {
+  margin-bottom: 1rem;
+}
+.graph-nav a,
+.graph-nav .link-btn {
+  color: #a1a1aa;
+  font-size: 0.875rem;
+}
+.graph-nav .link-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.graph-nav .link-btn:hover {
+  color: #fff;
+}
+.plan-section,
+.graph-section {
+  margin-bottom: 2rem;
+}
+.plan-section h2,
+.graph-section h2 {
+  font-size: 1.125rem;
+  margin: 0 0 0.5rem 0;
+  color: #a1a1aa;
+}
+.graph-section h3 {
+  font-size: 1rem;
+  margin: 1rem 0 0.5rem 0;
+  color: #71717a;
+}
+.graph-flow-container {
+  height: 520px;
+  min-height: 320px;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  background: #18181b;
+}
+.graph-mermaid-container {
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 1rem 1rem 1.5rem;
+}
+.graph-mermaid-container svg {
+  max-width: 100%;
+  height: auto;
+  flex-shrink: 0;
+}
+.graph-mermaid-container .mermaid-error {
+  color: #f87171;
+  font-size: 0.875rem;
+  margin: 0;
+}
+.graph-page.embedded .graph-flow-container {
+  height: 420px;
+}
+/* LangGraph-style nodes */
+.langgraph-node {
+  padding: 8px 14px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #1e1b4b;
+  border: 2px solid #818cf8;
+  box-sizing: border-box;
+}
+.langgraph-node-start,
+.langgraph-node-end {
+  border-radius: 999px;
+  min-width: 80px;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+}
+.langgraph-node-end {
+  background: #ddd6fe;
+}
+.langgraph-node-action {
+  border-radius: 8px;
+  background: #ddd6fe;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.langgraph-node-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.langgraph-node-divider {
+  height: 1px;
+  background: #a5b4fc;
+  margin: 2px 0;
+}
+.langgraph-node-interrupt {
+  font-size: 0.75rem;
+  color: #6366f1;
+  font-weight: 500;
+}
+.graph-flow-container .react-flow__node.selected .langgraph-node,
+.graph-flow-container .react-flow__node:focus .langgraph-node {
+  box-shadow: 0 0 0 2px #818cf8;
+}
+.graph-flow-container .react-flow__edge-path {
+  stroke: #1e1b4b;
+  stroke-width: 2px;
+}
+.graph-flow-container .react-flow__controls {
+  background: #27272a;
+  border-color: #3f3f46;
+}
+.graph-flow-container .react-flow__controls-button {
+  background: #27272a;
+  border-color: #3f3f46;
+  color: #a1a1aa;
+}
+.graph-flow-container .react-flow__controls-button:hover {
+  background: #3f3f46;
+  color: #fff;
+}
+.plan-text {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 1rem;
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  margin: 0;
+}
+.nodes-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.node-card {
+  padding: 0.5rem 0.75rem;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.node-id {
+  font-weight: 600;
+  color: #818cf8;
+}
+.node-label {
+  font-size: 0.8rem;
+  color: #71717a;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.edges-list ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+.edges-list li {
+  margin-bottom: 0.25rem;
+}
+.edges-list code {
+  background: #27272a;
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.muted {
+  color: #71717a;
+  margin: 0;
+}
+.page-error,
+.page-loading {
+  padding: 1rem 0;
+  color: #a1a1aa;
+}
+.page-error {
+  color: #f87171;
+}

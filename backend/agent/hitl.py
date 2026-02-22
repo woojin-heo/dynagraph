@@ -5,7 +5,20 @@ Human-in-the-loop (HITL) helpers for execution streams.
 - process_execution_steps: consume stream_execution/resume_execution steps, handle __interrupt__
   and yield running / paused / complete events. Used by both run() and resume() in runtime.
 """
+import re
 from typing import Dict, Any, List, Generator, Callable, Optional
+
+
+def _format_sql_for_display(raw: str) -> str:
+    """Insert newlines before major SQL keywords for readability."""
+    if not raw or not raw.strip():
+        return raw
+    s = raw.strip()
+    for keyword in ("FROM", "WHERE", "GROUP BY", "ORDER BY", "LEFT JOIN", "INNER JOIN", "RIGHT JOIN", "JOIN", "HAVING", "LIMIT", "OFFSET", "UNION", "EXCEPT", "INTERSECT"):
+        s = re.sub(rf"\s+({keyword})\s+", r"\n\1 ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+(AND)\s+", r"\n  \1 ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+(OR)\s+", r"\n  \1 ", s, flags=re.IGNORECASE)
+    return s.strip()
 
 
 def build_paused_payload(
@@ -32,8 +45,20 @@ def build_paused_payload(
         next_nodes = list(hitl_before)
     actions_list = current_state.get("actions", [])
     action_by_type = {a.get("action_type"): a for a in actions_list}
-    pending_actions = [action_by_type.get(n) or {"action_type": n} for n in next_nodes]
-    completed_nodes = list(current_state.get("previous_results", {}).keys())
+    previous_results = current_state.get("previous_results", {})
+
+    pending_actions = []
+    for n in next_nodes:
+        action = action_by_type.get(n) or {"action_type": n}
+        action = dict(action)
+        params = dict(action.get("params") or {})
+        if n == "SQL_EXECUTION":
+            raw = (previous_results.get("SQL_GENERATION") or params.get("query") or "").strip()
+            params["query"] = _format_sql_for_display(raw)
+        action["params"] = params
+        pending_actions.append(action)
+
+    completed_nodes = list(previous_results.keys())
     return {
         "phase": "execution",
         "status": "paused",
@@ -55,7 +80,7 @@ def process_execution_steps(
     thread_id: str,
     hitl_before: List[str],
     set_pending_message: Callable[[str], None],
-    sources_from_search_fn: Callable[[str], List[str]],
+    collect_sources_fn: Callable[[Dict[str, Any]], List[str]],
 ) -> Generator[Dict[str, Any], None, None]:
     """
     Consume execution steps (from stream_execution or resume_execution), handle
@@ -89,8 +114,7 @@ def process_execution_steps(
                 current_state.update(final_state)
             prev = current_state.get("previous_results", {})
             result_text = prev.get("RESPONSE_GENERATION", "")
-            search_result = prev.get("SEARCH_DOCUMENT", "")
-            sources = sources_from_search_fn(search_result)
+            sources = collect_sources_fn(prev)
             if sources and result_text and "references:" not in result_text:
                 result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
             yield {

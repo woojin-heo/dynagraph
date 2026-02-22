@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Callable, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 
-from .tools import tavily_search, wikipedia_search, search_document
+from .tools import tavily_search, wikipedia_search, search_document, sql_execution
 
 
 @dataclass
@@ -68,6 +68,18 @@ References rule: Add "references: source1, source2" at the end of your response 
     ("human", "{description}"),
 ])
 
+SQL_GENERATION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are a SQL generation agent. Generate a PostgreSQL-compatible SQL query to retrieve data from the database.
+
+Database schema (relevant tables and columns):
+{db_schema}
+
+Previous results from other actions:
+{previous_results}
+
+Output only the SQL query and nothing else: no markdown, no code fences (```), no explanation. A single block of executable PostgreSQL SQL that directly addresses the user's request. Use only the tables and columns described in the schema above."""),
+    ("human", "{description}"),
+])
 
 # =============================================================================
 # Action Registry
@@ -112,6 +124,18 @@ ACTION_REGISTRY: Dict[str, ActionDefinition] = {
         kind="tool",
         tool=search_document,
         description="Search internal documents (RAG)",
+    ),
+    "SQL_GENERATION": ActionDefinition(
+        action_type="SQL_GENERATION",
+        kind="llm",
+        prompt=SQL_GENERATION_PROMPT,
+        description="Generate SQL query to retrieve data from the database",
+    ),
+    "SQL_EXECUTION": ActionDefinition(
+        action_type="SQL_EXECUTION",
+        kind="tool",
+        tool=sql_execution,
+        description="Execute SQL query and return the result",
     ),
 }
 

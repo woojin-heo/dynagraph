@@ -120,7 +120,10 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     
     Available documents in vector database:
     {available_documents}
-    
+
+    Available tables in SQL database:
+    {available_tables}
+
     When planning actions, consider the following:
         1. Context awareness: Use previous conversation and results when relevant.
         2. Reference Resolution: Handle references like "that", "it", "the previous result", etc.
@@ -128,6 +131,8 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
         4. Conversation Continuity: Maintain logical flow from previous interactions.
         5. Reuse previous results: If relevant action results exist in "Previous turn action results", use CONTEXT_REFERENCE to pull them in instead of re-running tools.
         6. Document Search: If the user asks about internal documents, stored files, or knowledge base content, use SEARCH_DOCUMENT. Check available_documents above to see if relevant documents exist before searching.
+        7. Database queries: If the user asks about data that can be answered from the database (counts, lists, aggregates), use SQL_GENERATION (and optionally SQL_EXECUTION). Check available_tables above to see what tables exist.
+        8. SQL_EXECUTION rule: SQL_EXECUTION must only be used together with SQL_GENERATION in the same plan. It must run after SQL_GENERATION: set dependencies to include SQL_GENERATION and give SQL_EXECUTION a higher execution_order. The query to execute is taken from SQL_GENERATION's result automatically; you may omit params or set params to {{}} for SQL_EXECUTION. Do not plan SQL_EXECUTION without SQL_GENERATION.
 
     Available Action Types:
 
@@ -152,7 +157,7 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
         - dependencies: List of action types that must be completed before this action can be executed
         - execution_order: Sequential number of the action in the plan
 
-    Note: params are only required for tool-based actions. (SEARCH_TAVILY, SEARCH_WIKIPEDIA, SEARCH_DOCUMENT, etc.)
+    Note: params are only required for tool-based actions. (SEARCH_TAVILY, SEARCH_WIKIPEDIA, SEARCH_DOCUMENT, etc.) For SQL_EXECUTION, params are filled from SQL_GENERATION result; omit or use empty params.
 
     Response format (JSON):
     {{  

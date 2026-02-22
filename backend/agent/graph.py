@@ -1,3 +1,4 @@
+import re
 from functools import partial
 from itertools import groupby
 from typing import Dict, Any, List, Optional, Generator
@@ -7,6 +8,24 @@ from langgraph.checkpoint.memory import MemorySaver
 from .state import AgentState
 from .actions import get_action
 from .runtime import LLM
+
+
+def _extract_sql_query(text: str) -> str:
+    """Extract executable SQL from SQL_GENERATION output (strip markdown, code fences, leading/trailing junk)."""
+    if not text or not text.strip():
+        return ""
+    s = text.strip()
+    # Remove ```sql ... ``` or ``` ... ```
+    m = re.search(r"```(?:\w*)\s*([\s\S]*?)```", s)
+    if m:
+        s = m.group(1).strip()
+    return s.strip()
+
+
+try:
+    from backend.db import get_schema_for_prompt
+except ImportError:
+    from db import get_schema_for_prompt
 
 
 def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[str, Any]:
@@ -26,6 +45,11 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
 
     conversation_history = state.get('messages', [])[-10:]
     previous_results = state.get('previous_results', {})
+    # SQL_EXECUTION receives the raw query from SQL_GENERATION result (must run after SQL_GENERATION)
+    if action_type == 'SQL_EXECUTION':
+        raw = (previous_results.get('SQL_GENERATION') or params.get('query') or '').strip()
+        query = _extract_sql_query(raw)
+        params = {**params, 'query': query}
     user_request = conversation_history[-1].content if conversation_history else ''
 
     # Get action definition from unified registry
@@ -37,14 +61,23 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
         if action_def.prompt is None:
             result = f"Action '{action_type}' is LLM-based but has no prompt defined"
         else:
-            chain = action_def.prompt | llm
-            llm_result = chain.invoke({
+            invoke_vars = {
                 "conversation_history": conversation_history,
                 "previous_results": previous_results,
                 "user_request": user_request,
-                "description": description
-            })
+                "description": description,
+            }
+            if action_type == "SQL_GENERATION":
+                try:
+                    invoke_vars["db_schema"] = get_schema_for_prompt()
+                except Exception:
+                    invoke_vars["db_schema"] = ""
+            chain = action_def.prompt | llm
+            llm_result = chain.invoke(invoke_vars)
             result = llm_result.content
+            # SQL_GENERATION must return only the query (for SQL_EXECUTION and downstream)
+            if action_type == "SQL_GENERATION":
+                result = _extract_sql_query(result) or result
     elif action_def.kind == "tool":
         if action_def.tool is None:
             result = f"Action '{action_type}' is tool-based but tool not implemented"
@@ -94,7 +127,14 @@ def create_execution_graph(
     
     if not actions:
         return None, None
-    
+
+    # Enforce: SQL_EXECUTION only after SQL_GENERATION (drop SQL_EXECUTION if no SQL_GENERATION in plan)
+    action_types = {a.get('action_type') for a in actions}
+    if 'SQL_EXECUTION' in action_types and 'SQL_GENERATION' not in action_types:
+        actions = [a for a in actions if a.get('action_type') != 'SQL_EXECUTION']
+    if not actions:
+        return None, None
+
     # Sort actions by execution_order
     sorted_actions = sorted(actions, key=lambda x: x.get('execution_order', 0))
 

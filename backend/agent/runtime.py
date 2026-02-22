@@ -99,6 +99,9 @@ class ConversationAgent:
             action_type = action.get("action_type", "")
             params = action.get("params", {})
             merged_params = {**params, **overrides.get(action_type, {})}
+            # SQL_EXECUTION receives query from SQL_GENERATION; store it so conversation_previous_results shows actual params
+            if action_type == "SQL_EXECUTION" and prev.get("SQL_GENERATION"):
+                merged_params = {**merged_params, "query": (prev.get("SQL_GENERATION") or "").strip()}
             actions_with_results.append({
                 **action,
                 "params": merged_params,

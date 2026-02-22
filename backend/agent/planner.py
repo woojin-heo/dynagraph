@@ -7,6 +7,11 @@ from typing import Optional, Dict, Any, List, Union
 import json
 from .state import AgentState
 from .prompt_lib import PLANNING_PROMPT, TOOLS_DESCRIPTION, get_available_documents
+
+try:
+    from backend.db import get_available_tables
+except ImportError:
+    from db import get_available_tables
 from .runtime import LLM
 
 def _format_conversation_previous_results(
@@ -94,6 +99,11 @@ def planning_agent(state: AgentState,
     if not available_docs:
         available_docs = "(No documents currently stored in vector database)"
 
+    # Get available tables (SQL DB) for context
+    available_tables = get_available_tables()
+    if not available_tables:
+        available_tables = "(No table definition file found. Add backend/db/tables.yaml to describe SQL tables.)"
+
     # Action planning
     planning_chain = PLANNING_PROMPT | llm
     planning_result = planning_chain.invoke({
@@ -103,6 +113,7 @@ def planning_agent(state: AgentState,
         "conversation_previous_results": _format_conversation_previous_results(conv_prev),
         "tools_description": TOOLS_DESCRIPTION,
         "available_documents": available_docs,
+        "available_tables": available_tables,
     })
 
     planning_response = json.loads(planning_result.content)

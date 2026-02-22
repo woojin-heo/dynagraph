@@ -16,18 +16,41 @@ Organizations need AI systems that leverage shared infrastructure for efficiency
 
 
 ### Key Capabilities
-- **Dynamic Plan generation** 
-- **Modular Action Blocks** 
-- **Human in the loop**
-- **Tracing**
+- **Dynamic Plan generation** — For each user message, an LLM planner produces a step-by-step plan and an ordered list of actions (with dependencies and parallel groups).
+- **Modular Action Blocks** — Workflows are built from reusable actions (LLM or tool); each action is a node in the execution graph, with parallel fan-out/fan-in where applicable.
+- **Human in the loop** — Execution can pause before specified nodes (e.g. before running SQL); the user reviews or overrides parameters and resumes, then the run continues.
+- **Tracing** — Plan, actions, graph structure, and conversation state are exposed via API and UI so you can inspect and debug each turn.
 
 ### Architecture
 
 DynaGraph is structured in three layers:
 
-- **Frontend** (React + Vite): Chat UI, HITL parameter form, plan/graph view, Vector DB document list, and state debug. Communicates with the backend via REST and Server-Sent Events (SSE) for streaming.
-- **Backend API** (Flask): Session-per-conversation `ConversationAgent`; exposes `/api/chat` (SSE), `/api/resume` (SSE), `/api/conversation`, `/api/state`, `/api/graph`, `/api/documents`.
-- **Agent core**: For each user message, a **planner** (LLM) produces a plan and a list of **actions** with execution order. An **execution graph** (LangGraph `StateGraph`) is built from those actions—nodes are action types (LLM or tool), edges follow execution order (with parallel fan-out/fan-in). Optional **HITL** interrupts before specified nodes; the user can adjust parameters and resume. Results are merged into conversation state and reused across turns (e.g. CONTEXT_REFERENCE). Actions are either **LLM-based** (prompt + model) or **tool-based** (e.g. SEARCH_TAVILY, SEARCH_DOCUMENT, SQL_GENERATION/SQL_EXECUTION). External data: **PostgreSQL** (vector DB for RAG, optional DB schema for SQL).
+- **Frontend** (React + Vite)
+Communicates with the backend via REST and Server-Sent Events (SSE) for streaming.
+    - Chat UI
+    - HITL parameter form
+    - plan/graph view
+    - Vector DB document list
+    - state debug. 
+    
+- **Backend API** (Flask)
+    - Session-per-conversation `ConversationAgent`
+    - exposes 
+        - `/api/chat` (SSE)
+        - `/api/resume` (SSE)
+        - `GET /api/conversation/<conversation_id>`
+        - `GET /api/state`
+        - `GET /api/graph`
+        - `GET /api/documents`
+        - `GET /api/health`
+        - `GET /api/tables`
+- **Agent core**: 
+    - For each user message, a **planner** (LLM) produces a plan and a list of **actions** with execution order. 
+    - An **execution graph** (LangGraph `StateGraph`) is built from those actions—nodes are action types (LLM or tool), edges follow execution order (with parallel fan-out/fan-in). 
+    - Optional **HITL** interrupts before specified nodes; the user can adjust parameters and resume. 
+    - Results are merged into conversation state and reused across turns (e.g. CONTEXT_REFERENCE). 
+    - Actions are either **LLM-based** (prompt + model) or **tool-based** (e.g. `SEARCH_TAVILY`, `SEARCH_WIKIPEDIA`, `SEARCH_DOCUMENT`, `SQL_GENERATION`/`SQL_EXECUTION`). 
+    - External data: **PostgreSQL** (vector DB for RAG, optional DB schema for SQL).
 
 ```mermaid
 flowchart TB
@@ -79,5 +102,10 @@ The web UI provides chat (SSE), HITL parameter review, plan/graph view, Vector D
 Conversation memory, session/thread management, and RAG retrieval are described for implementers and maintainers in **[Technical Architecture](docs/technical-architecture.md)**. For vector DB setup and document indexing, see [Vector DB Setup](docs/vector-db-setup.md). The frontend (React + Vite) lives in `frontend/`; see [frontend/README.md](frontend/README.md) for its structure and API usage.
 
 ## Usecases
+
+Example setups under `usecases/` (data, schema, and instructions per case):
+
+- **[Card company analytics](usecases/card_company_analytics/)**
+- **[HR Onboarding](usecases/hr_scenario/)**
 
 

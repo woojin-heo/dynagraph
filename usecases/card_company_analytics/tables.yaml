@@ -1,0 +1,9 @@
+# Card company analytics
+# Copy to backend/db/tables.yaml when testing this use case.
+
+overview: "Card company analytics: sessions (with marketing campaign), signups, and merchants (KYC submit, lifetime volume). Data is 2024-2025."
+
+tables:
+  sessions: "One row per browsing session; includes marketing campaign. A session may lead to a signup."
+  signup: "Only users who completed signup; links to the session they came from and to their account."
+  merchant: "One row per account; signup date, whether KYC was submitted, and lifetime volume."

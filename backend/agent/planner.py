@@ -117,8 +117,37 @@ def planning_agent(state: AgentState,
     })
 
     planning_response = json.loads(planning_result.content)
+    need_clarification = planning_response.get("need_clarification", False)
+    actions = planning_response.get("actions", [])
+
+    # Ensure RESPONSE_GENERATION is always last when we have a non-clarification plan
+    if not need_clarification and actions:
+        has_response_gen = any(
+            a.get("action_type") == "RESPONSE_GENERATION"
+            for a in actions
+            if isinstance(a, dict)
+        )
+        if not has_response_gen:
+            max_order = max(
+                (a.get("execution_order", 0) for a in actions if isinstance(a, dict)),
+                default=0,
+            )
+            last_action_types = [
+                a.get("action_type")
+                for a in actions
+                if isinstance(a, dict) and a.get("execution_order") == max_order
+            ]
+            actions = list(actions) + [
+                {
+                    "action_type": "RESPONSE_GENERATION",
+                    "description": "Synthesize previous results and provide final response to the user",
+                    "dependencies": last_action_types or [],
+                    "execution_order": max_order + 1,
+                }
+            ]
+
     return {
-        "need_clarification": planning_response.get("need_clarification", False),
+        "need_clarification": need_clarification,
         "plan": planning_response.get("plan", ""),
-        "actions": planning_response.get("actions", []),
+        "actions": actions,
     }

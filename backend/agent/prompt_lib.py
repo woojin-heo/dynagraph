@@ -268,6 +268,8 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
     - Assign sequential execution_order when an action depends on the completion of a previous action.
     - RESPONSE_GENERATION must always be last in the sequence.
 
+    Mandatory rule: When need_clarification is false, you MUST include exactly one RESPONSE_GENERATION action as the final step (highest execution_order). Every user-facing reply must end with RESPONSE_GENERATION.
+
     If the request is unclear or requires additional information, set "need_clarification" to true and "actions" to an empty list.
     """),
     ("human", "{user_request}"),

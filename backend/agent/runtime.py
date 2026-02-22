@@ -8,13 +8,21 @@ import uuid
 load_dotenv()
 
 
-def _sources_from_search_document_result(text: str) -> List[str]:
-    """Extract unique document source names from SEARCH_DOCUMENT output (e.g. source=\"file.pdf\")."""
+def _sources_from_document_tags(text: str) -> List[str]:
+    """Extract unique source values from <Document source="..."> tags (URLs for Tavily, paths for RAG)."""
     if not text or "Error" in text or "No matching" in text:
         return []
-    # Match source="..." in <Document source="..." ...>
     names = re.findall(r'source="([^"]+)"', text)
     return list(dict.fromkeys(names))  # preserve order, dedupe
+
+
+def _collect_references(previous_results: Dict[str, Any]) -> List[str]:
+    """Collect source URLs/names from SEARCH_DOCUMENT, SEARCH_TAVILY, SEARCH_WIKIPEDIA (exact values from tags)."""
+    sources: List[str] = []
+    for key in ("SEARCH_DOCUMENT", "SEARCH_TAVILY", "SEARCH_WIKIPEDIA"):
+        text = previous_results.get(key) or ""
+        sources.extend(_sources_from_document_tags(text))
+    return list(dict.fromkeys(sources))  # preserve order, dedupe
 
 LLM = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
@@ -84,7 +92,7 @@ class ConversationAgent:
             thread_id=self._current_thread_id,
             hitl_before=self.hitl_before,
             set_pending_message=set_pending,
-            sources_from_search_fn=_sources_from_search_document_result,
+            collect_sources_fn=_collect_references,
         )
 
     def _append_turn_results(
@@ -114,8 +122,7 @@ class ConversationAgent:
             "actions": actions_with_results,
         })
         result_text = prev.get("RESPONSE_GENERATION", "")
-        search_result = prev.get("SEARCH_DOCUMENT", "")
-        sources = _sources_from_search_document_result(search_result)
+        sources = _collect_references(prev)
         if sources and result_text and "references:" not in result_text:
             result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
         self.messages = self.messages + [

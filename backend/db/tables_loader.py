@@ -36,3 +36,29 @@ def get_available_tables() -> str:
         return "\n".join(lines) if lines else ""
     except Exception:
         return ""
+
+
+def list_tables() -> list[dict]:
+    """
+    Read tables.yaml and return a list of table definitions for API/UI.
+    Returns:
+        [{"name": str, "description": str}, ...], or [] if missing/unreadable.
+    """
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base, "tables.yaml")
+        if not os.path.isfile(path):
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not data:
+            return []
+        tables = data.get("tables")
+        if not isinstance(tables, dict):
+            return []
+        return [
+            {"name": name, "description": desc if isinstance(desc, str) else str(desc)}
+            for name, desc in tables.items()
+        ]
+    except Exception:
+        return []

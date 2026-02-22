@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Callable, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 
-from .tools import tavily_search, wikipedia_search, search_document, sql_execution
+from .tools import search_tavily, search_wikipedia, search_document, sql_execution
 
 
 @dataclass
@@ -64,7 +64,7 @@ Previous results from other actions:
 
 Generate a clear, well-structured response that directly addresses the user's original request.
 
-References rule: Add "references: source1, source2" at the end of your response ONLY when SEARCH_DOCUMENT was executed in this turn (i.e. "Previous results from other actions" above contains SEARCH_DOCUMENT output with <Document source="..."> tags). List the document source names from those tags. Do NOT add a references line when the response is based only on CONTEXT_REFERENCE, REASONING, or other actions—even if the content originally came from documents in a previous turn. In those cases, omit the references line entirely."""),
+References rule: Do NOT add a "references:" line yourself. References (exact URLs or source names from document tags) are appended automatically when SEARCH_DOCUMENT, SEARCH_TAVILY, or SEARCH_WIKIPEDIA was used in this turn."""),
     ("human", "{description}"),
 ])
 
@@ -110,13 +110,13 @@ ACTION_REGISTRY: Dict[str, ActionDefinition] = {
     "SEARCH_TAVILY": ActionDefinition(
         action_type="SEARCH_TAVILY",
         kind="tool",
-        tool=tavily_search,
+        tool=search_tavily,
         description="Search the web using Tavily",
     ),
     "SEARCH_WIKIPEDIA": ActionDefinition(
         action_type="SEARCH_WIKIPEDIA",
         kind="tool",
-        tool=wikipedia_search,
+        tool=search_wikipedia,
         description="Search Wikipedia for information",
     ),
     "SEARCH_DOCUMENT": ActionDefinition(

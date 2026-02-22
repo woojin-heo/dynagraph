@@ -187,6 +187,33 @@ def create_execution_graph(
     return compiled, checkpointer
 
 
+def get_graph_mermaid(
+    actions: List[Dict[str, Any]],
+    hitl_before: Optional[List[str]] = None,
+) -> Optional[str]:
+    """
+    Build the same execution graph as create_execution_graph and return LangGraph's
+    Mermaid diagram string (get_graph().draw_mermaid()) if the API is available.
+    Returns None if the graph has no actions or if draw_mermaid is not available.
+    """
+    if not actions:
+        return None
+    try:
+        compiled, _ = create_execution_graph(
+            actions,
+            enable_hitl=bool(hitl_before),
+            hitl_before=hitl_before or [],
+        )
+        if compiled is None:
+            return None
+        g = compiled.get_graph()
+        if g is not None and hasattr(g, "draw_mermaid"):
+            return g.draw_mermaid()
+    except Exception:
+        pass
+    return None
+
+
 def stream_execution(
     graph, 
     state: AgentState, 

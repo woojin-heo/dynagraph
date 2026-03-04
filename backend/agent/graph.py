@@ -1,4 +1,5 @@
 import re
+import time
 from functools import partial
 from itertools import groupby
 from typing import Dict, Any, List, Optional, Generator
@@ -7,7 +8,8 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import AgentState
 from .actions import get_action
-from .runtime import LLM
+from .runtime import LLM, get_llm_for_action
+from .trace import record
 
 
 def _extract_sql_query(text: str) -> str:
@@ -39,22 +41,31 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
     action_type = action.get('action_type', 'unknown')
     description = action.get('description', '')
     params = action.get('params', {})
-    # Apply HITL param overrides (from resume(human_feedback))
     overrides = state.get('human_param_overrides', {}).get(action_type, {})
     params = {**params, **overrides}
 
     conversation_history = state.get('messages', [])[-10:]
     previous_results = state.get('previous_results', {})
-    # SQL_EXECUTION receives the raw query from SQL_GENERATION result (must run after SQL_GENERATION)
     if action_type == 'SQL_EXECUTION':
-        raw = (previous_results.get('SQL_GENERATION') or params.get('query') or '').strip()
+        override_query = overrides.get('query', '').strip()
+        if override_query:
+            raw = override_query
+        else:
+            raw = (previous_results.get('SQL_GENERATION') or params.get('query') or '').strip()
         query = _extract_sql_query(raw)
         params = {**params, 'query': query}
     user_request = conversation_history[-1].content if conversation_history else ''
 
-    # Get action definition from unified registry
     action_def = get_action(action_type)
-    
+    kind = action_def.kind if action_def else "unknown"
+
+    record("action_start",
+           action_type=action_type, kind=kind,
+           description=description, params=params,
+           has_overrides=bool(overrides))
+
+    t0 = time.time()
+
     if action_def is None:
         result = f"Action '{action_type}' not found in ACTION_REGISTRY"
     elif action_def.kind == "llm":
@@ -72,21 +83,46 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
                     invoke_vars["db_schema"] = get_schema_for_prompt()
                 except Exception:
                     invoke_vars["db_schema"] = ""
-            chain = action_def.prompt | llm
+
+            record("llm_call",
+                   action_type=action_type,
+                   prompt_vars={k: v for k, v in invoke_vars.items() if k != "conversation_history"},
+                   message_count=len(conversation_history))
+
+            effective_llm = get_llm_for_action(action_type)
+            chain = action_def.prompt | effective_llm
             llm_result = chain.invoke(invoke_vars)
             result = llm_result.content
-            # SQL_GENERATION must return only the query (for SQL_EXECUTION and downstream)
+
+            record("llm_response",
+                   action_type=action_type,
+                   response=result)
+
             if action_type == "SQL_GENERATION":
                 result = _extract_sql_query(result) or result
     elif action_def.kind == "tool":
         if action_def.tool is None:
             result = f"Action '{action_type}' is tool-based but tool not implemented"
         else:
+            record("tool_call",
+                   action_type=action_type,
+                   tool_name=action_def.tool.name if hasattr(action_def.tool, 'name') else action_type,
+                   params=params)
+
             result = action_def.tool.invoke(params)
+
+            record("tool_response",
+                   action_type=action_type,
+                   result=str(result))
     else:
         result = f"Action '{action_type}' has unknown kind: {action_def.kind}"
 
-    # Update previous_results with this action's result
+    duration_ms = round((time.time() - t0) * 1000, 1)
+    record("action_end",
+           action_type=action_type, kind=kind,
+           duration_ms=duration_ms,
+           result=str(result))
+
     updated_results = {**previous_results, action_type: result}
     
     return {

@@ -1,4 +1,5 @@
 import re
+import time
 from typing import Dict, Any, Optional, Generator, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -6,6 +7,8 @@ from dotenv import load_dotenv
 import uuid
 
 load_dotenv()
+
+from .trace import TraceCollector, set_current_trace, reset_current_trace
 
 
 def _sources_from_document_tags(text: str) -> List[str]:
@@ -24,7 +27,20 @@ def _collect_references(previous_results: Dict[str, Any]) -> List[str]:
         sources.extend(_sources_from_document_tags(text))
     return list(dict.fromkeys(sources))  # preserve order, dedupe
 
-LLM = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+DEFAULT_MODEL = "gpt-4o-mini"
+LLM = ChatOpenAI(model=DEFAULT_MODEL, temperature=0)
+
+ACTION_LLM_OVERRIDES: dict[str, dict] = {
+    "SQL_GENERATION": {"model": "gpt-4o", "temperature": 0},
+}
+
+
+def get_llm_for_action(action_type: str) -> ChatOpenAI:
+    """Return the LLM for a given action: override if configured, else default."""
+    cfg = ACTION_LLM_OVERRIDES.get(action_type)
+    if cfg:
+        return ChatOpenAI(**cfg)
+    return LLM
 
 # These imports come after LLM definition to avoid circular import issues
 from .state import AgentState
@@ -45,17 +61,17 @@ class ConversationAgent:
     Supports optional HITL (human-in-the-loop) via resume().
     """
     
-    def __init__(self, enable_hitl: bool = False, hitl_before: Optional[List[str]] = None):
+    def __init__(self, enable_hitl: bool = False, hitl_before: Optional[List[str]] = None,
+                 conversation_id: Optional[str] = None):
         self.messages: List[BaseMessage] = []
-        # Turn-based cache: [{"turn": N, "plan": "...", "need_clarification": bool, "actions": [{...action, "result": "..."}, ...]}, ...]
         self.conversation_previous_results: List[Dict[str, Any]] = []
         self.enable_hitl = enable_hitl
         self.hitl_before = hitl_before or []
         self.current_graph = None
         self._pending_user_message: Optional[str] = None
-        # Thread ID for the current execution run only (new graph per run → new thread_id per run)
         self._current_thread_id: Optional[str] = None
-        self._turn_number: int = 0  # Track turn number to preserve results across turns
+        self._turn_number: int = 0
+        self.trace = TraceCollector(conversation_id or str(uuid.uuid4()))
 
     @property
     def thread_id(self) -> Optional[str]:
@@ -137,76 +153,97 @@ class ConversationAgent:
         """
         self._turn_number += 1
         current_turn = self._turn_number
-        
-        # State for this turn: previous messages + new user message, empty previous_results
-        current_state: Dict[str, Any] = {
-            "messages": self.messages + [HumanMessage(content=user_message)],
-            "previous_results": {},
-            "need_clarification": False,
-            "plan": "",
-            "actions": [],
-        }
-        
+        turn_t0 = time.time()
 
-        yield {"phase": "planning", "status": "running"}
-        
-        planner_result = planning_agent(
-            current_state,
-            conversation_previous_results=self.conversation_previous_results,
-        )
-        current_state.update(planner_result)
-        
-        yield {
-            "phase": "planning",
-            "status": "complete",
-            "plan": current_state.get("plan", ""),
-            "actions": current_state.get("actions", []),
-        }
-        
-        if current_state.get("need_clarification"):
-            yield {
-                "phase": "clarification",
-                "status": "waiting",
-                "message": "Clarification needed from user",
+        token = set_current_trace(self.trace)
+        try:
+            self.trace.record("turn_start", turn=current_turn, user_message=user_message)
+
+            current_state: Dict[str, Any] = {
+                "messages": self.messages + [HumanMessage(content=user_message)],
+                "previous_results": {},
+                "need_clarification": False,
+                "plan": "",
+                "actions": [],
             }
-            return
-        
-        actions = current_state.get("actions", [])
-        if not actions:
+
+            yield {"phase": "planning", "status": "running"}
+            
+            planner_result = planning_agent(
+                current_state,
+                conversation_previous_results=self.conversation_previous_results,
+            )
+            current_state.update(planner_result)
+            
             yield {
-                "phase": "execution",
+                "phase": "planning",
                 "status": "complete",
-                "message": "No actions to execute",
+                "plan": current_state.get("plan", ""),
+                "actions": current_state.get("actions", []),
             }
-            return
-        
-        graph, _ = create_execution_graph(
-            actions,
-            enable_hitl=self.enable_hitl,
-            hitl_before=self.hitl_before,
-        )
-        if not graph:
-            yield {"phase": "execution", "status": "error", "message": "Failed to create graph"}
-            return
-        
-        self.current_graph = graph
-        self._current_thread_id = str(uuid.uuid4())
-        yield {"phase": "execution", "status": "running"}
+            
+            if current_state.get("need_clarification"):
+                self.trace.record("turn_complete", turn=current_turn,
+                                  duration_ms=round((time.time() - turn_t0) * 1000, 1),
+                                  outcome="clarification")
+                yield {
+                    "phase": "clarification",
+                    "status": "waiting",
+                    "message": "Clarification needed from user",
+                }
+                return
+            
+            actions = current_state.get("actions", [])
+            if not actions:
+                self.trace.record("turn_complete", turn=current_turn,
+                                  duration_ms=round((time.time() - turn_t0) * 1000, 1),
+                                  outcome="no_actions")
+                yield {
+                    "phase": "execution",
+                    "status": "complete",
+                    "message": "No actions to execute",
+                }
+                return
+            
+            graph, _ = create_execution_graph(
+                actions,
+                enable_hitl=self.enable_hitl,
+                hitl_before=self.hitl_before,
+            )
+            if not graph:
+                self.trace.record("error", turn=current_turn, error="Failed to create graph")
+                yield {"phase": "execution", "status": "error", "message": "Failed to create graph"}
+                return
+            
+            self.current_graph = graph
+            self._current_thread_id = str(uuid.uuid4())
+            yield {"phase": "execution", "status": "running"}
 
-        for event in self._process_execution_steps(
-            stream_execution(graph, current_state, self._current_thread_id),
-            current_state,
-            user_message,
-            current_turn,
-        ):
-            if event.get("status") == "complete":
-                self._append_turn_results(current_state, user_message, current_turn)
+            for event in self._process_execution_steps(
+                stream_execution(graph, current_state, self._current_thread_id),
+                current_state,
+                user_message,
+                current_turn,
+            ):
+                if event.get("status") == "complete":
+                    self._append_turn_results(current_state, user_message, current_turn)
+                    self.trace.record("turn_complete", turn=current_turn,
+                                      duration_ms=round((time.time() - turn_t0) * 1000, 1),
+                                      outcome="complete",
+                                      result=event.get("result", ""))
+                    yield event
+                    return
+                if event.get("status") == "paused":
+                    self.trace.record("turn_paused", turn=current_turn,
+                                      duration_ms=round((time.time() - turn_t0) * 1000, 1))
+                    yield event
+                    return
                 yield event
-                return
-            if event.get("status") == "paused":
-                yield event
-                return
-            yield event
+        except Exception as exc:
+            self.trace.record("error", turn=current_turn, error=str(exc))
+            raise
+        finally:
+            reset_current_trace(token)
 
     def resume(self, human_feedback: Optional[Dict[str, Any]] = None) -> Generator[Dict[str, Any], None, None]:
         """
@@ -221,29 +258,46 @@ class ConversationAgent:
             yield {"status": "error", "message": "No pending user message"}
             return
 
-        user_message = self._pending_user_message
-        current_state = get_current_state(self.current_graph, self._current_thread_id)
-        if not current_state:
-            yield {"status": "error", "message": "Could not load state for resume"}
-            return
+        token = set_current_trace(self.trace)
+        resume_t0 = time.time()
+        try:
+            self.trace.record("resume_start", turn=self._turn_number,
+                              human_feedback=human_feedback)
 
-        yield {"phase": "execution", "status": "resuming"}
+            user_message = self._pending_user_message
+            current_state = get_current_state(self.current_graph, self._current_thread_id)
+            if not current_state:
+                yield {"status": "error", "message": "Could not load state for resume"}
+                return
 
-        for event in self._process_execution_steps(
-            resume_execution(self.current_graph, self._current_thread_id, human_feedback),
-            current_state,
-            user_message,
-            self._turn_number,
-        ):
-            if event.get("status") == "complete":
-                self._append_turn_results(current_state, user_message, self._turn_number)
-                self._pending_user_message = None
+            yield {"phase": "execution", "status": "resuming"}
+
+            for event in self._process_execution_steps(
+                resume_execution(self.current_graph, self._current_thread_id, human_feedback),
+                current_state,
+                user_message,
+                self._turn_number,
+            ):
+                if event.get("status") == "complete":
+                    self._append_turn_results(current_state, user_message, self._turn_number)
+                    self._pending_user_message = None
+                    self.trace.record("turn_complete", turn=self._turn_number,
+                                      duration_ms=round((time.time() - resume_t0) * 1000, 1),
+                                      outcome="complete",
+                                      result=event.get("result", ""))
+                    yield event
+                    return
+                if event.get("status") == "paused":
+                    self.trace.record("turn_paused", turn=self._turn_number,
+                                      duration_ms=round((time.time() - resume_t0) * 1000, 1))
+                    yield event
+                    return
                 yield event
-                return
-            if event.get("status") == "paused":
-                yield event
-                return
-            yield event
+        except Exception as exc:
+            self.trace.record("error", turn=self._turn_number, error=str(exc))
+            raise
+        finally:
+            reset_current_trace(token)
 
 
 def run_agent(user_message: str) -> Dict[str, Any]:

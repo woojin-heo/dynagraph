@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List, Union
 import json
 from .state import AgentState
 from .prompt_lib import PLANNING_PROMPT, TOOLS_DESCRIPTION, get_available_documents
+from .trace import traced, record
 
 try:
     from backend.db import get_available_tables
@@ -82,6 +83,7 @@ def _format_conversation_previous_results(
     return "\n".join(lines)
 
 
+@traced("planning")
 def planning_agent(state: AgentState,
                    llm=LLM,
                    config: Optional[Dict[str, Any]] = None,
@@ -90,37 +92,49 @@ def planning_agent(state: AgentState,
     Planning agent function.
     """
     messages = state.get("messages", [])
-    recent_messages = messages[-10:] # last 10 messages
+    recent_messages = messages[-10:]
     previous_results = state.get("previous_results", {})
     conv_prev = conversation_previous_results or {}
     
-    # Get available documents for context
     available_docs = get_available_documents()
     if not available_docs:
         available_docs = "(No documents currently stored in vector database)"
 
-    # Get available tables (SQL DB) for context
     available_tables = get_available_tables()
     if not available_tables:
         available_tables = "(No table definition file found. Add backend/db/tables.yaml to describe SQL tables.)"
 
-    # Action planning
-    planning_chain = PLANNING_PROMPT | llm
-    planning_result = planning_chain.invoke({
-        "user_request": messages[-1].content if messages else None,
+    user_request = messages[-1].content if messages else None
+    conv_prev_formatted = _format_conversation_previous_results(conv_prev)
+
+    invoke_vars = {
+        "user_request": user_request,
         "conversation_history": recent_messages,
         "previous_results": previous_results,
-        "conversation_previous_results": _format_conversation_previous_results(conv_prev),
+        "conversation_previous_results": conv_prev_formatted,
         "tools_description": TOOLS_DESCRIPTION,
         "available_documents": available_docs,
         "available_tables": available_tables,
+    }
+
+    record("planning_llm_call", prompt_vars={
+        "user_request": user_request,
+        "previous_results": previous_results,
+        "conversation_previous_results": conv_prev_formatted,
+        "available_documents": available_docs,
+        "available_tables": available_tables,
+        "message_count": len(recent_messages),
     })
+
+    planning_chain = PLANNING_PROMPT | llm
+    planning_result = planning_chain.invoke(invoke_vars)
+
+    record("planning_llm_response", raw_response=planning_result.content)
 
     planning_response = json.loads(planning_result.content)
     need_clarification = planning_response.get("need_clarification", False)
     actions = planning_response.get("actions", [])
 
-    # Ensure RESPONSE_GENERATION is always last when we have a non-clarification plan
     if not need_clarification and actions:
         has_response_gen = any(
             a.get("action_type") == "RESPONSE_GENERATION"
@@ -145,6 +159,11 @@ def planning_agent(state: AgentState,
                     "execution_order": max_order + 1,
                 }
             ]
+
+    record("planning_result",
+           need_clarification=need_clarification,
+           plan=planning_response.get("plan", ""),
+           actions=[{"action_type": a.get("action_type"), "execution_order": a.get("execution_order")} for a in actions if isinstance(a, dict)])
 
     return {
         "need_clarification": need_clarification,

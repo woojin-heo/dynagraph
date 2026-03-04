@@ -27,6 +27,7 @@ def _get_or_create_agent(conversation_id: str) -> ConversationAgent:
         _agents[conversation_id] = ConversationAgent(
             enable_hitl=True,
             hitl_before=HITL_BEFORE,
+            conversation_id=conversation_id,
         )
     return _agents[conversation_id]
 
@@ -248,6 +249,26 @@ def api_graph():
         "interrupt_before": HITL_BEFORE,
         "graph_mermaid": graph_mermaid,
     })
+
+
+@app.route("/api/trace", methods=["GET"])
+def api_trace():
+    """Return trace events for debugging. Query: conversation_id, optional event_type, optional summary."""
+    conversation_id = request.args.get("conversation_id")
+    if not conversation_id or conversation_id not in _agents:
+        return jsonify({"error": "conversation_id required or conversation not found"}), 400
+    agent = _agents[conversation_id]
+    trace = agent.trace
+
+    if request.args.get("summary") in ("true", "1"):
+        return jsonify(trace.get_summary())
+
+    event_type = request.args.get("event_type")
+    if event_type:
+        events = trace.get_trace(event_types=event_type.split(","))
+    else:
+        events = trace.get_trace()
+    return jsonify({"conversation_id": conversation_id, "events": events})
 
 
 @app.route("/api/documents", methods=["GET"])

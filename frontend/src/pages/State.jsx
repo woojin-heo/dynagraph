@@ -10,13 +10,15 @@ function State({ conversationId: conversationIdProp, embedded, onClose }) {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!conversationId) return
+    if (!conversationId) {
+      setData({ state: null, message: 'No conversation yet. Send a message to start.' })
+      return
+    }
     getState(conversationId)
       .then(setData)
-      .catch((e) => setError(e.message))
+      .catch(() => setData({ state: null, message: 'Could not load state. The conversation may no longer exist on the server.' }))
   }, [conversationId])
 
-  if (error) return <div className="page-error">{error}</div>
   if (data === null) return <div className="page-loading">Loading…</div>
 
   const { state, message } = data
@@ -27,13 +29,17 @@ function State({ conversationId: conversationIdProp, embedded, onClose }) {
         {embedded && onClose ? (
           <button type="button" className="link-btn" onClick={onClose}>Close</button>
         ) : (
-          <Link to={`/conversation/${conversationId}`}>← Back to Chat</Link>
+          conversationId ? (
+            <Link to={`/conversation/${conversationId}`}>&larr; Back to Chat</Link>
+          ) : (
+            <Link to="/">&larr; Back to Chat</Link>
+          )
         )}
       </div>
       <h1>State (debug)</h1>
       {message && <p className="muted">{message}</p>}
       {state == null ? (
-        <p className="muted">No active run (not paused, no graph).</p>
+        !message && <p className="muted">No active run (not paused, no graph).</p>
       ) : (
         <pre className="state-json">{JSON.stringify(state, null, 2)}</pre>
       )}

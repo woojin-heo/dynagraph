@@ -27,6 +27,17 @@ def _collect_references(previous_results: Dict[str, Any]) -> List[str]:
         sources.extend(_sources_from_document_tags(text))
     return list(dict.fromkeys(sources))  # preserve order, dedupe
 
+
+def _format_references(sources: List[str]) -> str:
+    """Format sources as a markdown references block. URLs become clickable links."""
+    items = []
+    for s in sources:
+        if s.startswith(("http://", "https://")):
+            items.append(f"[{s}]({s})")
+        else:
+            items.append(s)
+    return "\n\nreferences:\n" + "\n".join(f"- {item}" for item in items)
+
 DEFAULT_MODEL = "gpt-4o-mini"
 LLM = ChatOpenAI(model=DEFAULT_MODEL, temperature=0)
 
@@ -81,6 +92,21 @@ class ConversationAgent:
     def get_conversation_history(self) -> List[BaseMessage]:
         """Return current conversation history."""
         return list(self.messages)
+
+    def get_paused_payload(self) -> Optional[Dict[str, Any]]:
+        """Return the HITL paused payload if the agent is currently paused, else None."""
+        if not self._pending_user_message or not self.current_graph or not self._current_thread_id:
+            return None
+        current_state = get_current_state(self.current_graph, self._current_thread_id)
+        if not current_state:
+            return None
+        return hitl.build_paused_payload(
+            self.current_graph,
+            self._current_thread_id,
+            current_state,
+            self._pending_user_message,
+            self.hitl_before,
+        )
     
     def clear_history(self) -> None:
         """Clear conversation history and cached results."""
@@ -109,6 +135,7 @@ class ConversationAgent:
             hitl_before=self.hitl_before,
             set_pending_message=set_pending,
             collect_sources_fn=_collect_references,
+            format_references_fn=_format_references,
         )
 
     def _append_turn_results(
@@ -140,7 +167,7 @@ class ConversationAgent:
         result_text = prev.get("RESPONSE_GENERATION", "")
         sources = _collect_references(prev)
         if sources and result_text and "references:" not in result_text:
-            result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
+            result_text = result_text.rstrip() + _format_references(sources)
         self.messages = self.messages + [
             HumanMessage(content=user_message),
             AIMessage(content=result_text),

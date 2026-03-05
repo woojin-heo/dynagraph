@@ -94,3 +94,9 @@ export async function getTables() {
   if (!res.ok) throw new Error('Failed to load tables');
   return res.json();
 }
+
+export async function getConfig() {
+  const res = await fetch(`${API_BASE}/config`);
+  if (!res.ok) throw new Error('Failed to load config');
+  return res.json();
+}

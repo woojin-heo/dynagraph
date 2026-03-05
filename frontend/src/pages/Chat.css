@@ -3,8 +3,10 @@
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  position: relative;
 }
-.chat-page.has-panel {
+.chat-page.has-panel,
+.chat-page.has-sidebar {
   display: flex;
   flex-direction: row;
   flex: 1;
@@ -32,7 +34,7 @@
   min-width: 280px;
   max-width: 800px;
   border-left: 1px solid #27272a;
-  overflow: auto;
+  overflow: hidden;
   background: #18181b;
   display: flex;
   flex-direction: column;
@@ -74,6 +76,19 @@
 .message.status {
   opacity: 0.8;
   font-style: italic;
+}
+.status-label {
+  color: #a1a1aa;
+}
+.status-node {
+  font-style: normal;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: #818cf8;
+  background: #1e1b4b;
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
 }
 .message.hitl-inline {
   align-items: flex-start;

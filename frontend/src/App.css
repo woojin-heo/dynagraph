@@ -1,7 +1,8 @@
 .app {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .nav {
   padding: 0.75rem 1.5rem;
@@ -20,10 +21,15 @@
 }
 .main {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
   padding: 0.75rem 1rem;
+}
+.main:has(.has-sidebar) {
+  max-width: 100%;
+  padding: 0.75rem 0 0.75rem 0;
 }

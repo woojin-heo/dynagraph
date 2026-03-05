@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import { chatStream, resumeStream, getConversation } from '../api'
 import Graph from './Graph'
 import State from './State'
+import Sidebar from './Sidebar'
 import './Chat.css'
 
 const STORAGE_KEY = 'dynagraph_last_conversation_id'
@@ -15,6 +16,7 @@ function Chat() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [phase, setPhase] = useState(null)
+  const [executingNode, setExecutingNode] = useState(null)
   const [streamError, setStreamError] = useState(null)
   const [paused, setPaused] = useState(null)
   const [hitlOverrides, setHitlOverrides] = useState({})
@@ -25,11 +27,12 @@ function Chat() {
   const [panelView, setPanelView] = useState(null)
   const [panelTurnIndex, setPanelTurnIndex] = useState(null)
   const [panelWidth, setPanelWidth] = useState(480)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(260)
 
   const handleResizeStart = useCallback((e) => {
     e.preventDefault()
     const startX = e.clientX
-    const startWidth = panelWidth
     const onMove = (moveEvent) => {
       const delta = startX - moveEvent.clientX
       setPanelWidth((w) => Math.min(800, Math.max(280, w + delta)))
@@ -44,21 +47,80 @@ function Chat() {
     document.body.style.userSelect = 'none'
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
-  }, [panelWidth])
+  }, [])
+
+  const handleSidebarResizeStart = useCallback((e) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const onMove = (moveEvent) => {
+      const delta = moveEvent.clientX - startX
+      setSidebarWidth((w) => Math.min(500, Math.max(200, w + delta)))
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [])
+
+  const restoreConversation = useCallback((data) => {
+    const msgs = (data.messages || []).map((m) => ({
+      role: m.role === 'ai' ? 'ai' : 'human',
+      content: m.content || '',
+    }))
+    setMessages(msgs)
+
+    const hitlTypes = new Set(data.hitl_before || [])
+    const restoredBlocks = []
+    for (let t = 0; t < (data.conversation_previous_results || []).length; t++) {
+      const turn = data.conversation_previous_results[t]
+      const hitlActions = (turn.actions || []).filter((a) => hitlTypes.has(a.action_type))
+      if (hitlActions.length > 0) {
+        const pendingActions = hitlActions.map((a) => ({
+          action_type: a.action_type,
+          params: a.params || {},
+        }))
+        const overrides = {}
+        for (const a of hitlActions) {
+          if (a.action_type && a.params) overrides[a.action_type] = { ...a.params }
+        }
+        restoredBlocks.push({
+          id: t,
+          payload: { pending_actions: pendingActions },
+          overrides,
+          afterMessageIndex: t * 2,
+        })
+      }
+    }
+    setResolvedHitlBlocks(restoredBlocks)
+
+    if (data.paused && data.paused.pending_actions) {
+      setPhase('paused')
+      setPaused(data.paused)
+      const overrides = {}
+      for (const a of data.paused.pending_actions) {
+        const type = a.action_type
+        if (type && a.params) overrides[type] = { ...a.params }
+      }
+      setHitlOverrides(overrides)
+    } else {
+      setPaused(null)
+      setHitlOverrides({})
+      setPhase(null)
+    }
+  }, [])
 
   useEffect(() => {
     if (urlId) {
       setConversationId(urlId)
       setLoading(true)
       getConversation(urlId)
-        .then((data) => {
-          const msgs = (data.messages || []).map((m) => ({
-            role: m.role === 'ai' ? 'ai' : 'human',
-            content: m.content || '',
-          }))
-          setMessages(msgs)
-          setResolvedHitlBlocks([])
-        })
+        .then(restoreConversation)
         .catch(() => setMessages([]))
         .finally(() => setLoading(false))
       return
@@ -68,21 +130,14 @@ function Chat() {
       setLoading(true)
       setConversationId(lastId)
       getConversation(lastId)
-        .then((data) => {
-          const msgs = (data.messages || []).map((m) => ({
-            role: m.role === 'ai' ? 'ai' : 'human',
-            content: m.content || '',
-          }))
-          setMessages(msgs)
-          setResolvedHitlBlocks([])
-        })
+        .then(restoreConversation)
         .catch(() => setMessages([]))
         .finally(() => setLoading(false))
     } else {
       setConversationId(null)
       setMessages([])
     }
-  }, [urlId])
+  }, [urlId, restoreConversation])
 
   useEffect(() => {
     if (conversationId) sessionStorage.setItem(STORAGE_KEY, conversationId)
@@ -100,6 +155,7 @@ function Chat() {
     setResolvedHitlBlocks([])
     setHitlEditExpanded(false)
     setPhase(null)
+    setExecutingNode(null)
     if (urlId) navigate('/', { replace: true })
   }, [urlId, navigate])
 
@@ -108,6 +164,7 @@ function Chat() {
     if (!text) return
     setInput('')
     setPhase('planning')
+    setExecutingNode(null)
     setStreamError(null)
     setPaused(null)
     setHitlOverrides({})
@@ -127,6 +184,7 @@ function Chat() {
         if (event.phase === 'execution') {
           if (event.status === 'complete') {
             setPhase(null)
+            setExecutingNode(null)
             if (event.result !== undefined) {
               setMessages((prev) => [...prev, { role: 'ai', content: event.result }])
             }
@@ -134,6 +192,7 @@ function Chat() {
           }
           if (event.status === 'paused') {
             setPhase('paused')
+            setExecutingNode(null)
             setPaused(event)
             const overrides = {}
             for (const a of event.pending_actions || []) {
@@ -143,10 +202,14 @@ function Chat() {
             setHitlOverrides(overrides)
             break
           }
+          if (event.node && event.node !== '__interrupt__') {
+            setExecutingNode(event.node)
+          }
           setPhase('execution')
         }
         if (event.phase === 'clarification') {
           setPhase(null)
+          setExecutingNode(null)
           setMessages((prev) => [...prev, { role: 'ai', content: event.message || 'Clarification needed.' }])
           break
         }
@@ -154,6 +217,7 @@ function Chat() {
     } catch (e) {
       setStreamError(e.message)
       setPhase(null)
+      setExecutingNode(null)
     }
   }, [input, conversationId])
 
@@ -161,6 +225,7 @@ function Chat() {
     if (!conversationId || !paused) return
     const afterMessageIndex = Math.max(0, messages.length - 1)
     setResuming(true)
+    setExecutingNode(null)
     setStreamError(null)
     try {
       for await (const event of resumeStream({
@@ -174,6 +239,7 @@ function Chat() {
               { id: Date.now(), payload: paused, overrides: { ...hitlOverrides }, afterMessageIndex },
             ])
             setPhase(null)
+            setExecutingNode(null)
             setPaused(null)
             if (event.result !== undefined) {
               setMessages((prev) => [...prev, { role: 'ai', content: event.result }])
@@ -181,6 +247,7 @@ function Chat() {
             break
           }
           if (event.status === 'paused') {
+            setExecutingNode(null)
             setPaused(event)
             setHitlEditExpanded(false)
             const overrides = {}
@@ -190,6 +257,9 @@ function Chat() {
             }
             setHitlOverrides(overrides)
             break
+          }
+          if (event.node && event.node !== '__interrupt__') {
+            setExecutingNode(event.node)
           }
         }
       }
@@ -209,20 +279,44 @@ function Chat() {
 
   if (loading) return <div className="chat-page"><div className="messages"><p className="muted">Loading conversation…</p></div></div>
 
+  const hasPanel = !!panelView
+
   const openGraphPanel = (turnIndex = null) => {
     setPanelTurnIndex(turnIndex)
     setPanelView('graph')
   }
 
   return (
-    <div className={`chat-page${panelView ? ' has-panel' : ''}`}>
+    <div className={`chat-page${hasPanel ? ' has-panel' : ''}${sidebarOpen ? ' has-sidebar' : ''}`}>
+      {!sidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-toggle"
+          onClick={() => setSidebarOpen(true)}
+          title="Show settings"
+        >
+          &#9654;
+        </button>
+      )}
+      <Sidebar visible={sidebarOpen} onClose={() => setSidebarOpen(false)} width={sidebarWidth} />
+      {sidebarOpen && (
+        <div
+          className="sidebar-resize-handle"
+          onMouseDown={handleSidebarResizeStart}
+          title="Drag to resize"
+        />
+      )}
       <div className="chat-main">
         <div className="messages">
           {messages.map((m, i) => (
             <Fragment key={`msg-${i}`}>
               <div className={`message message-${m.role}`}>
                 <div className="message-content">
-                  {m.role === 'ai' ? <ReactMarkdown>{m.content}</ReactMarkdown> : m.content}
+                  {m.role === 'ai' ? (
+                    <ReactMarkdown
+                      components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+                    >{m.content}</ReactMarkdown>
+                  ) : m.content}
                 </div>
                 {m.role === 'ai' && conversationId && (
                   <div className="message-actions">
@@ -387,7 +481,11 @@ function Chat() {
         {phase && phase !== 'paused' && (
           <div className="message message-ai status">
             {phase === 'planning' && 'Planning…'}
-            {phase === 'execution' && 'Executing…'}
+            {phase === 'execution' && (
+              executingNode
+                ? <><span className="status-label">Executing</span> <span className="status-node">{executingNode}</span></>
+                : 'Executing…'
+            )}
           </div>
         )}
         </div>

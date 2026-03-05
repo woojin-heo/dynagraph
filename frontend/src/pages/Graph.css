@@ -1,6 +1,14 @@
 .graph-page {
   padding-bottom: 2rem;
 }
+.graph-page.embedded {
+  padding: 0 1rem 1rem;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
 .graph-nav {
   margin-bottom: 1rem;
 }

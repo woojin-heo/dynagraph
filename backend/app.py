@@ -82,6 +82,32 @@ def api_health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/config", methods=["GET"])
+def api_config():
+    """Return current system configuration for the settings sidebar."""
+    from backend.agent.actions import ACTION_REGISTRY
+    from backend.agent.runtime import DEFAULT_MODEL, ACTION_LLM_OVERRIDES
+
+    actions = []
+    for key, defn in ACTION_REGISTRY.items():
+        llm_override = ACTION_LLM_OVERRIDES.get(key)
+        actions.append({
+            "action_type": key,
+            "kind": defn.kind,
+            "description": defn.description,
+            "llm_model": llm_override["model"] if llm_override else DEFAULT_MODEL if defn.kind == "llm" else None,
+            "temperature": llm_override.get("temperature", 0) if llm_override else 0 if defn.kind == "llm" else None,
+            "hitl_enabled": key in HITL_BEFORE,
+        })
+
+    return jsonify({
+        "default_model": DEFAULT_MODEL,
+        "default_temperature": 0,
+        "hitl_before": HITL_BEFORE,
+        "actions": actions,
+    })
+
+
 @app.route("/api/chat", methods=["OPTIONS"])
 def api_chat_options():
     """Explicit OPTIONS for CORS preflight (avoid 403 in strict environments)."""
@@ -173,14 +199,17 @@ def api_resume():
 
 @app.route("/api/conversation/<conversation_id>", methods=["GET"])
 def api_conversation(conversation_id: str):
-    """Return conversation history and previous turn results (plan/actions)."""
+    """Return conversation history, previous turn results, and current HITL pause state (if any)."""
     if conversation_id not in _agents:
         return jsonify({"error": "Conversation not found"}), 404
     agent = _agents[conversation_id]
     messages = [_serialize_message(m) for m in agent.get_conversation_history()]
+    paused_payload = agent.get_paused_payload()
     return jsonify({
         "messages": messages,
         "conversation_previous_results": agent.conversation_previous_results,
+        "paused": paused_payload,
+        "hitl_before": HITL_BEFORE,
     })
 
 
@@ -189,7 +218,7 @@ def api_state():
     """Return current graph state for debugging. Query: conversation_id."""
     conversation_id = request.args.get("conversation_id")
     if not conversation_id or conversation_id not in _agents:
-        return jsonify({"error": "conversation_id required or conversation not found"}), 400
+        return jsonify({"state": None, "message": "No conversation state yet. Send a message to start."}), 200
     agent = _agents[conversation_id]
     if not agent.current_graph or not agent.thread_id:
         return jsonify({"state": None, "message": "No active run (not paused, no graph)"}), 200

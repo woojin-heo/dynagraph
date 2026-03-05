@@ -81,6 +81,7 @@ def process_execution_steps(
     hitl_before: List[str],
     set_pending_message: Callable[[str], None],
     collect_sources_fn: Callable[[Dict[str, Any]], List[str]],
+    format_references_fn: Callable[[List[str]], str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     Consume execution steps (from stream_execution or resume_execution), handle
@@ -116,7 +117,10 @@ def process_execution_steps(
             result_text = prev.get("RESPONSE_GENERATION", "")
             sources = collect_sources_fn(prev)
             if sources and result_text and "references:" not in result_text:
-                result_text = result_text.rstrip() + "\n\nreferences: " + ", ".join(sources)
+                if format_references_fn:
+                    result_text = result_text.rstrip() + format_references_fn(sources)
+                else:
+                    result_text = result_text.rstrip() + "\n\nreferences:\n" + "\n".join(f"- {s}" for s in sources)
             yield {
                 "phase": "execution",
                 "status": "complete",

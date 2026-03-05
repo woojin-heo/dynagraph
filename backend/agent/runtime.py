@@ -73,7 +73,8 @@ class ConversationAgent:
     """
     
     def __init__(self, enable_hitl: bool = False, hitl_before: Optional[List[str]] = None,
-                 conversation_id: Optional[str] = None):
+                 conversation_id: Optional[str] = None, tenant_id: Optional[str] = None):
+        self.tenant_id = tenant_id
         self.messages: List[BaseMessage] = []
         self.conversation_previous_results: List[Dict[str, Any]] = []
         self.enable_hitl = enable_hitl

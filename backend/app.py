@@ -1,39 +1,101 @@
 """
 Flask API for dynagraph: chat (SSE), resume (HITL), conversation, state, graph, documents.
+Multi-tenant: every request scoped by X-Tenant-ID header.
 Run from repo root: FLASK_APP=backend.app:app flask run
 """
 import json
 import uuid
-from typing import Any, Dict, Generator, List, Tuple
+import logging
+from typing import Any, Dict, Generator, List, Tuple, Optional
+from functools import wraps
 
-from flask import Flask, Response, request, jsonify
+from flask import Flask, Response, request, jsonify, g
 from flask_cors import CORS
 
 from backend.agent.runtime import ConversationAgent
 from backend.agent.graph import get_current_state, get_graph_mermaid
+from backend.db.tenant import (
+    ensure_tables,
+    create_tenant, get_tenant, list_tenants, delete_tenant,
+    create_conversation, list_conversations, get_conversation_meta,
+    update_conversation_title, touch_conversation, delete_conversation,
+    conversation_belongs_to_tenant,
+)
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger(__name__)
 
 app = Flask(__name__)
-# Allow frontend origin and proxy; avoid 403 on POST (e.g. CORS preflight)
-CORS(app, resources={r"/api/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "allow_headers": ["Content-Type"]}})
+CORS(app, resources={r"/api/*": {
+    "origins": "*",
+    "methods": ["GET", "POST", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "X-Tenant-ID"],
+}})
 
-# In-memory store: conversation_id -> ConversationAgent
-_agents: Dict[str, ConversationAgent] = {}
+# In-memory store: (tenant_id, conversation_id) -> ConversationAgent
+_agents: Dict[tuple, ConversationAgent] = {}
 
 HITL_BEFORE = ["SQL_EXECUTION"]
 
+# Bootstrap DB tables on import (idempotent)
+try:
+    ensure_tables()
+except Exception as e:
+    log.warning("Could not ensure tenant tables (DB may not be reachable yet): %s", e)
 
-def _get_or_create_agent(conversation_id: str) -> ConversationAgent:
-    if conversation_id not in _agents:
-        _agents[conversation_id] = ConversationAgent(
+
+# ---------------------------------------------------------------------------
+# Tenant middleware
+# ---------------------------------------------------------------------------
+
+TENANT_EXEMPT_PREFIXES = ("/api/health", "/api/tenants")
+
+
+def _require_tenant():
+    """Extract and validate X-Tenant-ID header. Sets g.tenant_id."""
+    if request.method == "OPTIONS":
+        return None
+    path = request.path
+    if any(path.startswith(p) for p in TENANT_EXEMPT_PREFIXES):
+        return None
+    tenant_id = request.headers.get("X-Tenant-ID", "").strip()
+    if not tenant_id:
+        return jsonify({"error": "X-Tenant-ID header is required"}), 400
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        return jsonify({"error": f"Tenant '{tenant_id}' not found"}), 404
+    g.tenant_id = tenant_id
+    return None
+
+
+app.before_request(_require_tenant)
+
+
+def _agent_key(tenant_id: str, conversation_id: str) -> tuple:
+    return (tenant_id, conversation_id)
+
+
+def _get_or_create_agent(tenant_id: str, conversation_id: str) -> ConversationAgent:
+    key = _agent_key(tenant_id, conversation_id)
+    if key not in _agents:
+        _agents[key] = ConversationAgent(
             enable_hitl=True,
             hitl_before=HITL_BEFORE,
             conversation_id=conversation_id,
+            tenant_id=tenant_id,
         )
-    return _agents[conversation_id]
+    return _agents[key]
 
+
+def _get_agent(tenant_id: str, conversation_id: str) -> Optional[ConversationAgent]:
+    return _agents.get(_agent_key(tenant_id, conversation_id))
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _serialize_message(msg: Any) -> Dict[str, Any]:
-    """Convert LangChain BaseMessage to JSON-serializable dict."""
     if hasattr(msg, "type") and hasattr(msg, "content"):
         t = getattr(msg, "type", "unknown")
         if t == "human":
@@ -50,7 +112,6 @@ def _serialize_message(msg: Any) -> Dict[str, Any]:
 
 
 def _serialize_state(state: Dict[str, Any] | None) -> Dict[str, Any] | None:
-    """Make agent state JSON-serializable (messages, datetime, etc.)."""
     if state is None:
         return None
     out = {}
@@ -70,21 +131,50 @@ def _serialize_state(state: Dict[str, Any] | None) -> Dict[str, Any] | None:
 
 
 def _sse_stream(gen: Generator[Dict[str, Any], None, None]) -> Generator[str, None, None]:
-    """Yield SSE-formatted lines from a generator of dict events."""
     for event in gen:
         payload = json.dumps(event, default=str)
         yield f"data: {payload}\n\n"
 
 
+def _build_graph_from_actions(actions: list) -> Tuple[List[Dict], List[Dict]]:
+    if not actions:
+        return [], []
+    sorted_actions = sorted(actions, key=lambda x: x.get("execution_order", 0))
+    nodes = [{"id": a.get("action_type", "unknown"), "label": a.get("description", "") or a.get("action_type", "")} for a in sorted_actions]
+    execution_groups: List[Tuple[int, List[str]]] = []
+    for a in sorted_actions:
+        order = a.get("execution_order", 0)
+        if not execution_groups or execution_groups[-1][0] != order:
+            execution_groups.append((order, []))
+        execution_groups[-1][1].append(a.get("action_type", "unknown"))
+    edges = []
+    for i, (_, group) in enumerate(execution_groups):
+        if i + 1 < len(execution_groups):
+            next_group = execution_groups[i + 1][1]
+            for src in group:
+                for tgt in next_group:
+                    edges.append({"source": src, "target": tgt})
+    return nodes, edges
+
+
+def _first_user_message_as_title(message: str, max_len: int = 60) -> str:
+    title = message.strip().split("\n")[0]
+    if len(title) > max_len:
+        title = title[:max_len] + "…"
+    return title
+
+
+# ---------------------------------------------------------------------------
+# Health / Config (tenant-exempt)
+# ---------------------------------------------------------------------------
+
 @app.route("/api/health", methods=["GET"])
 def api_health():
-    """Check backend is reachable (e.g. via frontend proxy)."""
     return jsonify({"status": "ok"})
 
 
 @app.route("/api/config", methods=["GET"])
 def api_config():
-    """Return current system configuration for the settings sidebar."""
     from backend.agent.actions import ACTION_REGISTRY
     from backend.agent.runtime import DEFAULT_MODEL, ACTION_LLM_OVERRIDES
 
@@ -99,7 +189,6 @@ def api_config():
             "temperature": llm_override.get("temperature", 0) if llm_override else 0 if defn.kind == "llm" else None,
             "hitl_enabled": key in HITL_BEFORE,
         })
-
     return jsonify({
         "default_model": DEFAULT_MODEL,
         "default_temperature": 0,
@@ -108,30 +197,117 @@ def api_config():
     })
 
 
+# ---------------------------------------------------------------------------
+# Tenant CRUD (tenant-exempt – no X-Tenant-ID needed)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/tenants", methods=["GET"])
+def api_tenants_list():
+    return jsonify(list_tenants())
+
+
+@app.route("/api/tenants", methods=["POST"])
+def api_tenants_create():
+    body = request.get_json(force=True, silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    try:
+        tenant = create_tenant(name, tenant_id=body.get("id"))
+        return jsonify(tenant), 201
+    except Exception as e:
+        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+            return jsonify({"error": f"Tenant name '{name}' already exists"}), 409
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tenants/<tenant_id>", methods=["GET"])
+def api_tenant_get(tenant_id: str):
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    return jsonify(tenant)
+
+
+@app.route("/api/tenants/<tenant_id>", methods=["DELETE"])
+def api_tenant_delete(tenant_id: str):
+    keys_to_remove = [k for k in _agents if k[0] == tenant_id]
+    for k in keys_to_remove:
+        del _agents[k]
+    if delete_tenant(tenant_id):
+        return jsonify({"deleted": True})
+    return jsonify({"error": "Tenant not found"}), 404
+
+
+@app.route("/api/tenants", methods=["OPTIONS"])
+def api_tenants_options():
+    return "", 200
+
+
+# ---------------------------------------------------------------------------
+# Conversation list (tenant-scoped)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/conversations", methods=["GET"])
+def api_conversations_list():
+    tenant_id = g.tenant_id
+    return jsonify(list_conversations(tenant_id))
+
+
+@app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
+def api_conversation_delete(conversation_id: str):
+    tenant_id = g.tenant_id
+    key = _agent_key(tenant_id, conversation_id)
+    if key in _agents:
+        del _agents[key]
+    if delete_conversation(conversation_id, tenant_id):
+        return jsonify({"deleted": True})
+    return jsonify({"error": "Conversation not found"}), 404
+
+
+@app.route("/api/conversations", methods=["OPTIONS"])
+def api_conversations_options():
+    return "", 200
+
+
+# ---------------------------------------------------------------------------
+# Chat / Resume (tenant-scoped)
+# ---------------------------------------------------------------------------
+
 @app.route("/api/chat", methods=["OPTIONS"])
 def api_chat_options():
-    """Explicit OPTIONS for CORS preflight (avoid 403 in strict environments)."""
     return "", 200
 
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    """Stream agent.run(message) via SSE. Body: { conversation_id?, message }."""
     try:
+        tenant_id = g.tenant_id
         body = request.get_json(force=True, silent=True) or {}
         message = (body.get("message") or "").strip()
         conversation_id = body.get("conversation_id")
         if not message:
             return jsonify({"error": "message is required"}), 400
+
+        is_new = False
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
-        agent = _get_or_create_agent(conversation_id)
+            is_new = True
+        else:
+            if not conversation_belongs_to_tenant(conversation_id, tenant_id):
+                return jsonify({"error": "Conversation not found for this tenant"}), 404
+
+        if is_new:
+            title = _first_user_message_as_title(message)
+            create_conversation(tenant_id, conversation_id=conversation_id, title=title)
+        else:
+            touch_conversation(conversation_id, tenant_id)
+
+        agent = _get_or_create_agent(tenant_id, conversation_id)
 
         def generate():
-            # Send conversation_id first so client can store it
             yield f"data: {json.dumps({'conversation_id': conversation_id})}\n\n"
             for event in agent.run(message):
-                # Make event JSON-serializable (e.g. no custom objects)
                 ev = {k: v for k, v in event.items() if k in (
                     "phase", "status", "message", "plan", "actions",
                     "paused_before_nodes", "pending_actions", "completed_nodes",
@@ -161,16 +337,16 @@ def api_resume_options():
 
 @app.route("/api/resume", methods=["POST"])
 def api_resume():
-    """Stream agent.resume(human_feedback) via SSE. Body: { conversation_id, param_overrides? }."""
     try:
+        tenant_id = g.tenant_id
         body = request.get_json(force=True, silent=True) or {}
         conversation_id = body.get("conversation_id")
         param_overrides = body.get("param_overrides") or {}
         if not conversation_id:
             return jsonify({"error": "conversation_id is required"}), 400
-        if conversation_id not in _agents:
+        agent = _get_agent(tenant_id, conversation_id)
+        if not agent:
             return jsonify({"error": "No conversation found or execution not paused"}), 404
-        agent = _agents[conversation_id]
         human_feedback = {"param_overrides": param_overrides}
 
         def generate():
@@ -197,13 +373,31 @@ def api_resume():
         return jsonify({"error": str(e)}), 500
 
 
+# ---------------------------------------------------------------------------
+# Conversation detail, state, graph, trace (tenant-scoped)
+# ---------------------------------------------------------------------------
+
 @app.route("/api/conversation/<conversation_id>", methods=["GET"])
 def api_conversation(conversation_id: str):
-    """Return conversation history, previous turn results, and current HITL pause state (if any)."""
-    if conversation_id not in _agents:
-        return jsonify({"error": "Conversation not found"}), 404
-    agent = _agents[conversation_id]
+    tenant_id = g.tenant_id
+    agent = _get_agent(tenant_id, conversation_id)
+    log.info("[GET conversation] tenant=%s conv=%s agent_found=%s agent_keys=%s",
+             tenant_id, conversation_id, agent is not None,
+             [k for k in _agents.keys()])
+    if not agent:
+        in_db = conversation_belongs_to_tenant(conversation_id, tenant_id)
+        log.info("[GET conversation] agent not found, in_db=%s → returning %s",
+                 in_db, "empty 200" if in_db else "404")
+        if not in_db:
+            return jsonify({"error": "Conversation not found"}), 404
+        return jsonify({
+            "messages": [],
+            "conversation_previous_results": [],
+            "paused": None,
+            "hitl_before": HITL_BEFORE,
+        })
     messages = [_serialize_message(m) for m in agent.get_conversation_history()]
+    log.info("[GET conversation] returning %d messages", len(messages))
     paused_payload = agent.get_paused_payload()
     return jsonify({
         "messages": messages,
@@ -215,11 +409,13 @@ def api_conversation(conversation_id: str):
 
 @app.route("/api/state", methods=["GET"])
 def api_state():
-    """Return current graph state for debugging. Query: conversation_id."""
+    tenant_id = g.tenant_id
     conversation_id = request.args.get("conversation_id")
-    if not conversation_id or conversation_id not in _agents:
+    if not conversation_id:
+        return jsonify({"state": None, "message": "conversation_id required"}), 400
+    agent = _get_agent(tenant_id, conversation_id)
+    if not agent:
         return jsonify({"state": None, "message": "No conversation state yet. Send a message to start."}), 200
-    agent = _agents[conversation_id]
     if not agent.current_graph or not agent.thread_id:
         return jsonify({"state": None, "message": "No active run (not paused, no graph)"}), 200
     state = get_current_state(agent.current_graph, agent.thread_id)
@@ -227,37 +423,15 @@ def api_state():
     return jsonify({"state": serialized})
 
 
-def _build_graph_from_actions(actions: list) -> Tuple[List[Dict], List[Dict]]:
-    """From planned actions build nodes and edges (execution_order). Returns (nodes, edges)."""
-    if not actions:
-        return [], []
-    sorted_actions = sorted(actions, key=lambda x: x.get("execution_order", 0))
-    nodes = [{"id": a.get("action_type", "unknown"), "label": a.get("description", "") or a.get("action_type", "")} for a in sorted_actions]
-    execution_groups = []
-    for a in sorted_actions:
-        order = a.get("execution_order", 0)
-        if not execution_groups or execution_groups[-1][0] != order:
-            execution_groups.append((order, []))
-        execution_groups[-1][1].append(a.get("action_type", "unknown"))
-    edges = []
-    for i, (_, group) in enumerate(execution_groups):
-        if i + 1 < len(execution_groups):
-            next_group = execution_groups[i + 1][1]
-            for src in group:
-                for tgt in next_group:
-                    edges.append({"source": src, "target": tgt})
-    return nodes, edges
-
-
 @app.route("/api/graph", methods=["GET"])
 def api_graph():
-    """Return plan and graph (nodes, edges) for a turn. Query: conversation_id, optional turn (0-based)."""
+    tenant_id = g.tenant_id
     conversation_id = request.args.get("conversation_id")
     turn = request.args.get("turn", type=int)
-    if not conversation_id or conversation_id not in _agents:
-        return jsonify({"error": "conversation_id required or conversation not found"}), 400
-    agent = _agents[conversation_id]
-    if not agent.conversation_previous_results:
+    if not conversation_id:
+        return jsonify({"error": "conversation_id required"}), 400
+    agent = _get_agent(tenant_id, conversation_id)
+    if not agent or not agent.conversation_previous_results:
         return jsonify({"plan": "", "nodes": [], "edges": [], "turn_results": [], "interrupt_before": HITL_BEFORE, "graph_mermaid": None})
     results = agent.conversation_previous_results
     if turn is not None:
@@ -282,16 +456,16 @@ def api_graph():
 
 @app.route("/api/trace", methods=["GET"])
 def api_trace():
-    """Return trace events for debugging. Query: conversation_id, optional event_type, optional summary."""
+    tenant_id = g.tenant_id
     conversation_id = request.args.get("conversation_id")
-    if not conversation_id or conversation_id not in _agents:
-        return jsonify({"error": "conversation_id required or conversation not found"}), 400
-    agent = _agents[conversation_id]
+    if not conversation_id:
+        return jsonify({"error": "conversation_id required"}), 400
+    agent = _get_agent(tenant_id, conversation_id)
+    if not agent:
+        return jsonify({"error": "Conversation not found"}), 404
     trace = agent.trace
-
     if request.args.get("summary") in ("true", "1"):
         return jsonify(trace.get_summary())
-
     event_type = request.args.get("event_type")
     if event_type:
         events = trace.get_trace(event_types=event_type.split(","))
@@ -300,9 +474,12 @@ def api_trace():
     return jsonify({"conversation_id": conversation_id, "events": events})
 
 
+# ---------------------------------------------------------------------------
+# Documents / Tables (shared resources, tenant-scoped via header validation)
+# ---------------------------------------------------------------------------
+
 @app.route("/api/documents", methods=["GET"])
 def api_documents():
-    """Return list of documents in vector DB (source, chunk_count, created_at)."""
     try:
         from backend.db.rag_indexing import list_documents
         docs = list_documents()
@@ -322,7 +499,6 @@ def api_documents():
 
 @app.route("/api/tables", methods=["GET"])
 def api_tables():
-    """Return list of SQL tables from backend/db/tables.yaml (name, description)."""
     try:
         from backend.db import list_tables
         tables = list_tables()
@@ -330,6 +506,10 @@ def api_tables():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import os

@@ -5,9 +5,16 @@
   overflow: hidden;
 }
 .nav {
-  padding: 0.75rem 1.5rem;
+  padding: 0.5rem 1.5rem;
   background: #18181b;
   border-bottom: 1px solid #27272a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-shrink: 0;
+}
+.nav-links {
   display: flex;
   gap: 1.5rem;
 }
@@ -19,6 +26,163 @@
   color: #fff;
   text-decoration: none;
 }
+
+/* Tenant selector */
+.tenant-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.tenant-selector select {
+  background: #27272a;
+  color: #e4e4e7;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  min-width: 160px;
+}
+.tenant-add-btn {
+  background: #3f3f46;
+  color: #e4e4e7;
+  border: none;
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tenant-add-btn:hover {
+  background: #52525b;
+}
+.tenant-create-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.tenant-create-inline input {
+  background: #27272a;
+  color: #e4e4e7;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  width: 140px;
+}
+.tenant-create-inline button {
+  background: #3f3f46;
+  color: #e4e4e7;
+  border: none;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.tenant-create-inline button:hover {
+  background: #52525b;
+}
+.tenant-error {
+  color: #ef4444;
+  font-size: 0.8rem;
+}
+
+/* Conversation list (horizontal bar below nav) */
+.conversation-list {
+  background: #1c1c1f;
+  border-bottom: 1px solid #27272a;
+  padding: 0.4rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.conversation-list-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #71717a;
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.conv-refresh-btn {
+  background: none;
+  border: none;
+  color: #71717a;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+}
+.conv-refresh-btn:hover {
+  color: #a1a1aa;
+}
+.conv-item {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.conv-item:hover {
+  background: #3f3f46;
+}
+.conv-title {
+  color: #d4d4d8;
+  font-size: 0.8rem;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-delete-btn {
+  background: none;
+  border: none;
+  color: #71717a;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 0.15rem;
+  line-height: 1;
+}
+.conv-delete-btn:hover {
+  color: #ef4444;
+}
+.conv-loading, .conv-empty {
+  color: #71717a;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* Tenant gate */
+.tenant-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #a1a1aa;
+  text-align: center;
+}
+.tenant-gate h2 {
+  color: #e4e4e7;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+.tenant-gate p {
+  color: #71717a;
+  font-size: 0.95rem;
+}
+
+/* Main content area */
 .main {
   flex: 1;
   min-height: 0;

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import { chatStream, resumeStream, getConversation } from '../api'
+import { useTenant } from '../TenantContext'
 import Graph from './Graph'
 import State from './State'
 import Sidebar from './Sidebar'
@@ -12,6 +13,7 @@ const STORAGE_KEY = 'dynagraph_last_conversation_id'
 function Chat() {
   const { id: urlId } = useParams()
   const navigate = useNavigate()
+  const { tenantId } = useTenant()
   const [conversationId, setConversationId] = useState(urlId || null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -116,12 +118,22 @@ function Chat() {
   }, [])
 
   useEffect(() => {
+    if (!tenantId) {
+      setConversationId(null)
+      setMessages([])
+      sessionStorage.removeItem(STORAGE_KEY)
+      return
+    }
     if (urlId) {
       setConversationId(urlId)
       setLoading(true)
       getConversation(urlId)
         .then(restoreConversation)
-        .catch(() => setMessages([]))
+        .catch(() => {
+          setConversationId(null)
+          setMessages([])
+          sessionStorage.removeItem(STORAGE_KEY)
+        })
         .finally(() => setLoading(false))
       return
     }
@@ -131,13 +143,17 @@ function Chat() {
       setConversationId(lastId)
       getConversation(lastId)
         .then(restoreConversation)
-        .catch(() => setMessages([]))
+        .catch(() => {
+          setConversationId(null)
+          setMessages([])
+          sessionStorage.removeItem(STORAGE_KEY)
+        })
         .finally(() => setLoading(false))
     } else {
       setConversationId(null)
       setMessages([])
     }
-  }, [urlId, restoreConversation])
+  }, [urlId, tenantId, restoreConversation])
 
   useEffect(() => {
     if (conversationId) sessionStorage.setItem(STORAGE_KEY, conversationId)
@@ -523,7 +539,7 @@ function Chat() {
             </button>
           )}
           <button type="button" className="link-btn link-btn-new" onClick={handleStartNewChat}>
-            Restart
+            New chat
           </button>
         </div>
       </div>

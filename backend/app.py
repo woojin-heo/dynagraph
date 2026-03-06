@@ -75,20 +75,40 @@ def _agent_key(tenant_id: str, conversation_id: str) -> tuple:
     return (tenant_id, conversation_id)
 
 
+def _make_agent(tenant_id: str, conversation_id: str) -> ConversationAgent:
+    return ConversationAgent(
+        enable_hitl=True,
+        hitl_before=HITL_BEFORE,
+        conversation_id=conversation_id,
+        tenant_id=tenant_id,
+    )
+
+
 def _get_or_create_agent(tenant_id: str, conversation_id: str) -> ConversationAgent:
+    """Return an in-memory agent, restoring from DB if necessary."""
     key = _agent_key(tenant_id, conversation_id)
     if key not in _agents:
-        _agents[key] = ConversationAgent(
-            enable_hitl=True,
-            hitl_before=HITL_BEFORE,
-            conversation_id=conversation_id,
-            tenant_id=tenant_id,
-        )
+        agent = _make_agent(tenant_id, conversation_id)
+        agent.load_from_db()
+        _agents[key] = agent
     return _agents[key]
 
 
 def _get_agent(tenant_id: str, conversation_id: str) -> Optional[ConversationAgent]:
     return _agents.get(_agent_key(tenant_id, conversation_id))
+
+
+def _get_or_restore_agent(tenant_id: str, conversation_id: str) -> Optional[ConversationAgent]:
+    """Return in-memory agent, or restore from DB if the conversation exists."""
+    key = _agent_key(tenant_id, conversation_id)
+    if key in _agents:
+        return _agents[key]
+    if not conversation_belongs_to_tenant(conversation_id, tenant_id):
+        return None
+    agent = _make_agent(tenant_id, conversation_id)
+    agent.load_from_db()
+    _agents[key] = agent
+    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -380,24 +400,10 @@ def api_resume():
 @app.route("/api/conversation/<conversation_id>", methods=["GET"])
 def api_conversation(conversation_id: str):
     tenant_id = g.tenant_id
-    agent = _get_agent(tenant_id, conversation_id)
-    log.info("[GET conversation] tenant=%s conv=%s agent_found=%s agent_keys=%s",
-             tenant_id, conversation_id, agent is not None,
-             [k for k in _agents.keys()])
+    agent = _get_or_restore_agent(tenant_id, conversation_id)
     if not agent:
-        in_db = conversation_belongs_to_tenant(conversation_id, tenant_id)
-        log.info("[GET conversation] agent not found, in_db=%s → returning %s",
-                 in_db, "empty 200" if in_db else "404")
-        if not in_db:
-            return jsonify({"error": "Conversation not found"}), 404
-        return jsonify({
-            "messages": [],
-            "conversation_previous_results": [],
-            "paused": None,
-            "hitl_before": HITL_BEFORE,
-        })
+        return jsonify({"error": "Conversation not found"}), 404
     messages = [_serialize_message(m) for m in agent.get_conversation_history()]
-    log.info("[GET conversation] returning %d messages", len(messages))
     paused_payload = agent.get_paused_payload()
     return jsonify({
         "messages": messages,
@@ -430,7 +436,7 @@ def api_graph():
     turn = request.args.get("turn", type=int)
     if not conversation_id:
         return jsonify({"error": "conversation_id required"}), 400
-    agent = _get_agent(tenant_id, conversation_id)
+    agent = _get_or_restore_agent(tenant_id, conversation_id)
     if not agent or not agent.conversation_previous_results:
         return jsonify({"plan": "", "nodes": [], "edges": [], "turn_results": [], "interrupt_before": HITL_BEFORE, "graph_mermaid": None})
     results = agent.conversation_previous_results
@@ -460,7 +466,7 @@ def api_trace():
     conversation_id = request.args.get("conversation_id")
     if not conversation_id:
         return jsonify({"error": "conversation_id required"}), 400
-    agent = _get_agent(tenant_id, conversation_id)
+    agent = _get_or_restore_agent(tenant_id, conversation_id)
     if not agent:
         return jsonify({"error": "Conversation not found"}), 404
     trace = agent.trace

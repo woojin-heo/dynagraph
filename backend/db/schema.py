@@ -1,16 +1,48 @@
 """
 PostgreSQL schema introspection for SQL generation prompts.
 Uses information_schema to get table/column metadata and foreign-key relationships.
+Outputs CREATE TABLE DDL so the LLM sees the exact column definitions.
 """
 from itertools import groupby
-from typing import Optional, List
+from typing import Optional, List, Set
 
 from .connection import get_connection
+
+OPERATIONAL_TABLES: Set[str] = {
+    "tenants",
+    "conversations",
+    "document_chunks",
+    "checkpoint_blobs",
+    "checkpoint_migrations",
+    "checkpoint_writes",
+    "checkpoints",
+}
+
+
+def _effective_filter(
+    table_filter: Optional[List[str]],
+) -> Optional[List[str]]:
+    """If table_filter is given, return it as-is (user explicitly chose tables).
+    Otherwise return None so the SQL queries fetch everything — operational
+    tables are stripped later in Python so we don't need to know their names
+    at query time."""
+    return table_filter
+
+
+def _exclude_operational(rows: list, table_name_index: int,
+                         table_filter: Optional[List[str]]) -> list:
+    """Remove rows belonging to OPERATIONAL_TABLES unless the caller
+    explicitly asked for them via table_filter."""
+    if table_filter:
+        return rows
+    return [r for r in rows if r[table_name_index] not in OPERATIONAL_TABLES]
 
 
 def _fetch_columns(cur, schema_name: str, table_filter: Optional[List[str]]) -> list:
     sql = """
-        SELECT t.table_schema, t.table_name, c.column_name, c.data_type, c.udt_name
+        SELECT t.table_schema, t.table_name,
+               c.column_name, c.data_type, c.udt_name,
+               c.is_nullable, c.column_default
         FROM information_schema.tables t
         JOIN information_schema.columns c
           ON t.table_schema = c.table_schema AND t.table_name = c.table_name
@@ -69,21 +101,55 @@ def _fetch_foreign_keys(cur, schema_name: str, table_filter: Optional[List[str]]
     return cur.fetchall()
 
 
+_PG_TYPE_MAP = {
+    "integer": "INTEGER",
+    "bigint": "BIGINT",
+    "smallint": "SMALLINT",
+    "numeric": "NUMERIC",
+    "real": "REAL",
+    "double precision": "DOUBLE PRECISION",
+    "boolean": "BOOLEAN",
+    "text": "TEXT",
+    "character varying": "VARCHAR",
+    "character": "CHAR",
+    "date": "DATE",
+    "timestamp without time zone": "TIMESTAMP",
+    "timestamp with time zone": "TIMESTAMPTZ",
+    "time without time zone": "TIME",
+    "time with time zone": "TIMETZ",
+    "uuid": "UUID",
+    "jsonb": "JSONB",
+    "json": "JSON",
+    "bytea": "BYTEA",
+    "USER-DEFINED": None,
+}
+
+
+def _pg_type(data_type: str, udt_name: str) -> str:
+    mapped = _PG_TYPE_MAP.get(data_type)
+    if mapped is not None:
+        return mapped
+    if data_type == "USER-DEFINED":
+        return udt_name.upper()
+    return data_type.upper()
+
+
 def get_schema_for_prompt(
     schema_name: str = "public",
     table_filter: Optional[List[str]] = None,
 ) -> str:
     """
-    Return a human-readable description of PostgreSQL tables, columns,
-    and foreign-key relationships suitable for LLM prompts.
+    Return CREATE TABLE DDL for PostgreSQL tables suitable for LLM prompts.
+
+    Operational tables (tenants, conversations, document_chunks, checkpoint_*)
+    are excluded by default unless explicitly requested via table_filter.
 
     Args:
         schema_name: PostgreSQL schema (default "public").
         table_filter: If set, only include these table names (case-sensitive).
 
     Returns:
-        Tables section  – "schema.table: col1 (type), col2 (type), ..."
-        Relationships section – "table.column -> referenced_table.column"
+        DDL string with CREATE TABLE statements and foreign-key comments.
     """
     conn = get_connection()
     try:
@@ -94,34 +160,53 @@ def get_schema_for_prompt(
     finally:
         conn.close()
 
-    # Build FK lookup: (table, column) -> "ref_table.ref_column"
+    col_rows = _exclude_operational(col_rows, 1, table_filter)
+    fk_rows = _exclude_operational(fk_rows, 0, table_filter)
+
     fk_map: dict[tuple[str, str], str] = {}
     for src_table, src_col, ref_table, ref_col in fk_rows:
-        fk_map[(src_table, src_col)] = f"{ref_table}.{ref_col}"
+        fk_map[(src_table, src_col)] = f"{ref_table}({ref_col})"
 
-    lines: list[str] = []
+    blocks: list[str] = []
 
     for (tbl_schema, tbl_name), group in groupby(
         col_rows, key=lambda r: (r[0], r[1])
     ):
-        lines.append(f"{tbl_schema}.{tbl_name}:")
+        col_defs: list[str] = []
+        pk_cols: list[str] = []
+        fk_clauses: list[str] = []
+
         for row in group:
-            col_name, data_type = row[2], row[3]
-            markers = []
+            col_name = row[2]
+            data_type = row[3]
+            udt_name = row[4]
+            is_nullable = row[5]
+            col_default = row[6]
+
+            parts = [f"  {col_name}", _pg_type(data_type, udt_name)]
+            if is_nullable == "NO":
+                parts.append("NOT NULL")
+            if col_default and "nextval" not in str(col_default):
+                parts.append(f"DEFAULT {col_default}")
+
             if (tbl_name, col_name) in pk_set:
-                markers.append("PK")
+                pk_cols.append(col_name)
+
             fk_target = fk_map.get((tbl_name, col_name))
             if fk_target:
-                markers.append(f"FK -> {fk_target}")
-            marker_str = f" [{', '.join(markers)}]" if markers else ""
-            lines.append(f"  - {col_name} ({data_type}){marker_str}")
+                fk_clauses.append(
+                    f"  FOREIGN KEY ({col_name}) REFERENCES {fk_target}"
+                )
 
-    if fk_rows:
-        lines.append("")
-        lines.append("JOIN conditions (always use these exact conditions):")
-        for src_table, src_col, ref_table, ref_col in fk_rows:
-            lines.append(
-                f"  {src_table}.{src_col} = {ref_table}.{ref_col}"
-            )
+            col_defs.append(" ".join(parts))
 
-    return "\n".join(lines) if lines else ""
+        if pk_cols:
+            col_defs.append(f"  PRIMARY KEY ({', '.join(pk_cols)})")
+        col_defs.extend(fk_clauses)
+
+        ddl = f"CREATE TABLE {tbl_name} (\n"
+        ddl += ",\n".join(col_defs)
+        ddl += "\n);"
+        blocks.append(ddl)
+
+    return "\n\n".join(blocks) if blocks else ""

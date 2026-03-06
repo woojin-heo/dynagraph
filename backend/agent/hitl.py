@@ -58,7 +58,7 @@ def build_paused_payload(
         action["params"] = params
         pending_actions.append(action)
 
-    completed_nodes = list(previous_results.keys())
+    completed_nodes = [k for k in previous_results if not k.startswith("__")]
     return {
         "phase": "execution",
         "status": "paused",
@@ -110,31 +110,59 @@ def process_execution_steps(
                     graph, thread_id, current_state, user_message, hitl_before
                 )
                 return
+            # LangGraph may not yield __interrupt__; check graph state for pending tasks
+            if graph and not saw_interrupt:
+                try:
+                    graph_state = graph.get_state({"configurable": {"thread_id": thread_id}})
+                    if graph_state and getattr(graph_state, "tasks", None):
+                        current = get_current_state_fn(graph, thread_id)
+                        if current:
+                            current_state.update(current)
+                        set_pending_message(user_message)
+                        yield build_paused_payload(
+                            graph, thread_id, current_state, user_message, hitl_before
+                        )
+                        return
+                except Exception:
+                    pass
             final_state = get_current_state_fn(graph, thread_id)
             if final_state:
                 current_state.update(final_state)
             prev = current_state.get("previous_results", {})
             result_text = prev.get("RESPONSE_GENERATION", "")
+            viz_image = prev.get("__VISUALIZATION_IMAGE__", "")
+            if viz_image:
+                result_text = result_text.rstrip() + "\n\n" + viz_image
             sources = collect_sources_fn(prev)
             if sources and result_text and "references:" not in result_text:
                 if format_references_fn:
                     result_text = result_text.rstrip() + format_references_fn(sources)
                 else:
                     result_text = result_text.rstrip() + "\n\nreferences:\n" + "\n".join(f"- {s}" for s in sources)
+            safe_prev = {k: v for k, v in prev.items() if not k.startswith("__")}
             yield {
                 "phase": "execution",
                 "status": "complete",
                 "result": result_text,
-                "all_results": prev,
+                "all_results": safe_prev,
             }
             return
         current = get_current_state_fn(graph, thread_id)
         if current:
             current_state.update(current)
+        raw_output = step.get("output")
+        if isinstance(raw_output, dict) and "previous_results" in raw_output:
+            raw_output = {
+                **raw_output,
+                "previous_results": {
+                    k: v for k, v in raw_output["previous_results"].items()
+                    if not k.startswith("__")
+                },
+            }
         yield {
             "phase": "execution",
             "node": step.get("node"),
-            "output": step.get("output"),
+            "output": raw_output,
             "status": "running",
         }
     # Fallback: no __interrupt__ but graph may be paused (e.g. different LangGraph version)

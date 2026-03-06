@@ -133,6 +133,9 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
         6. Document Search: If the user asks about internal documents, stored files, or knowledge base content, use SEARCH_DOCUMENT. Check available_documents above to see if relevant documents exist before searching.
         7. Database queries: If the user asks about data that can be answered from the database (counts, lists, aggregates), use SQL_GENERATION (and optionally SQL_EXECUTION). Check available_tables above to see what tables exist.
         8. SQL_EXECUTION rule: SQL_EXECUTION must only be used together with SQL_GENERATION in the same plan. It must run after SQL_GENERATION: set dependencies to include SQL_GENERATION and give SQL_EXECUTION a higher execution_order. The query to execute is taken from SQL_GENERATION's result automatically; you may omit params or set params to {{}} for SQL_EXECUTION. Do not plan SQL_EXECUTION without SQL_GENERATION.
+        9. Visualization: If the user asks for a chart, graph, plot, or any visual representation of data, use VISUALIZATION_CODE_GENERATION followed by VISUALIZATION_EXECUTION. VISUALIZATION_CODE_GENERATION generates matplotlib Python code; VISUALIZATION_EXECUTION runs it and returns the chart image.
+        10. VISUALIZATION_EXECUTION rule: Same as SQL_EXECUTION — must only be used together with VISUALIZATION_CODE_GENERATION. It must run after VISUALIZATION_CODE_GENERATION: set dependencies to include VISUALIZATION_CODE_GENERATION and give VISUALIZATION_EXECUTION a higher execution_order. The code is taken from VISUALIZATION_CODE_GENERATION's result automatically; omit params or set params to {{}}. Do not plan VISUALIZATION_EXECUTION without VISUALIZATION_CODE_GENERATION.
+        11. When both data retrieval (SQL) and visualization are needed, plan SQL first, then visualization: SQL_GENERATION → SQL_EXECUTION → VISUALIZATION_CODE_GENERATION → VISUALIZATION_EXECUTION → RESPONSE_GENERATION.
 
     Available Action Types:
 
@@ -146,6 +149,11 @@ PLANNING_PROMPT = ChatPromptTemplate.from_messages([
         - RESPONSE_GENERATION : Generate a final response to the user.
             - use when: Need to synthesize information and provide a final answer.
             - example: "summarize findings", "provide final answer with explanation"
+
+        - VISUALIZATION_CODE_GENERATION : Generate Python matplotlib code to create a chart/graph.
+            - use when: The user asks for a chart, graph, plot, or visual representation of data.
+            - Must be followed by VISUALIZATION_EXECUTION.
+            - example: "Generate a bar chart showing sales by month"
 
         [Tool based actions]
         {tools_description}

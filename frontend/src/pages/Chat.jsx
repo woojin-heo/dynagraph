@@ -330,7 +330,12 @@ function Chat() {
                 <div className="message-content">
                   {m.role === 'ai' ? (
                     <ReactMarkdown
-                      components={{ a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+                      components={{
+                        a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                        img: ({ node, ...props }) => (
+                          <img {...props} className="chat-chart-image" loading="lazy" />
+                        ),
+                      }}
                     >{m.content}</ReactMarkdown>
                   ) : m.content}
                 </div>

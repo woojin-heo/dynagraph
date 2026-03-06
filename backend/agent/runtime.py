@@ -1,5 +1,6 @@
 import re
 import time
+import logging
 from typing import Dict, Any, Optional, Generator, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
@@ -9,6 +10,8 @@ import uuid
 load_dotenv()
 
 from .trace import TraceCollector, set_current_trace, reset_current_trace
+
+_log = logging.getLogger(__name__)
 
 
 def _sources_from_document_tags(text: str) -> List[str]:
@@ -75,6 +78,7 @@ class ConversationAgent:
     def __init__(self, enable_hitl: bool = False, hitl_before: Optional[List[str]] = None,
                  conversation_id: Optional[str] = None, tenant_id: Optional[str] = None):
         self.tenant_id = tenant_id
+        self.conversation_id = conversation_id or str(uuid.uuid4())
         self.messages: List[BaseMessage] = []
         self.conversation_previous_results: List[Dict[str, Any]] = []
         self.enable_hitl = enable_hitl
@@ -83,7 +87,66 @@ class ConversationAgent:
         self._pending_user_message: Optional[str] = None
         self._current_thread_id: Optional[str] = None
         self._turn_number: int = 0
-        self.trace = TraceCollector(conversation_id or str(uuid.uuid4()))
+        self.trace = TraceCollector(self.conversation_id)
+
+    # ------------------------------------------------------------------
+    # DB persistence helpers
+    # ------------------------------------------------------------------
+
+    def _serialize_messages(self) -> list:
+        """Serialize LangChain messages to JSON-safe list."""
+        out = []
+        for m in self.messages:
+            role = "human" if isinstance(m, HumanMessage) else "ai"
+            out.append({"role": role, "content": m.content or ""})
+        return out
+
+    @staticmethod
+    def _deserialize_messages(raw: list) -> List[BaseMessage]:
+        """Restore LangChain message objects from JSON list."""
+        msgs: List[BaseMessage] = []
+        for item in raw or []:
+            if item.get("role") == "human":
+                msgs.append(HumanMessage(content=item.get("content", "")))
+            else:
+                msgs.append(AIMessage(content=item.get("content", "")))
+        return msgs
+
+    def save_to_db(self) -> None:
+        """Persist messages and turn results to the conversations table."""
+        if not self.tenant_id:
+            return
+        try:
+            from backend.db.tenant import save_conversation_state
+            save_conversation_state(
+                self.conversation_id,
+                self.tenant_id,
+                self._serialize_messages(),
+                self.conversation_previous_results,
+                self._turn_number,
+            )
+        except Exception as e:
+            _log.warning("Failed to save conversation state to DB: %s", e)
+
+    def load_from_db(self) -> bool:
+        """Restore messages and turn results from DB. Returns True if data was found."""
+        if not self.tenant_id:
+            return False
+        try:
+            from backend.db.tenant import load_conversation_state
+            data = load_conversation_state(self.conversation_id, self.tenant_id)
+            if not data:
+                return False
+            msgs = data.get("messages") or []
+            if msgs:
+                self.messages = self._deserialize_messages(msgs)
+                self.conversation_previous_results = data.get("turn_results") or []
+                self._turn_number = data.get("turn_number") or 0
+                return True
+            return False
+        except Exception as e:
+            _log.warning("Failed to load conversation state from DB: %s", e)
+            return False
 
     @property
     def thread_id(self) -> Optional[str]:
@@ -166,6 +229,9 @@ class ConversationAgent:
             "actions": actions_with_results,
         })
         result_text = prev.get("RESPONSE_GENERATION", "")
+        viz_image = prev.get("__VISUALIZATION_IMAGE__", "")
+        if viz_image:
+            result_text = result_text.rstrip() + "\n\n" + viz_image
         sources = _collect_references(prev)
         if sources and result_text and "references:" not in result_text:
             result_text = result_text.rstrip() + _format_references(sources)
@@ -173,6 +239,7 @@ class ConversationAgent:
             HumanMessage(content=user_message),
             AIMessage(content=result_text),
         ]
+        self.save_to_db()
 
     def run(self, user_message: str) -> Generator[Dict[str, Any], None, None]:
         """

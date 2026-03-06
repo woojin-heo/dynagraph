@@ -1,5 +1,8 @@
+import os
 import re
+import json
 import time
+import logging
 from functools import partial
 from itertools import groupby
 from typing import Dict, Any, List, Optional, Generator
@@ -10,6 +13,38 @@ from .state import AgentState
 from .actions import get_action
 from .runtime import LLM, get_llm_for_action
 from .trace import record
+
+_log = logging.getLogger(__name__)
+
+_postgres_saver_available = False
+try:
+    from langgraph.checkpoint.postgres import PostgresSaver
+    import psycopg
+    _postgres_saver_available = True
+except ImportError:
+    _postgres_saver_available = False
+
+_pg_checkpointer_setup_done = False
+
+
+def get_checkpointer():
+    """Return PostgresSaver if DB is reachable, else MemorySaver."""
+    global _pg_checkpointer_setup_done
+    if not _postgres_saver_available:
+        return MemorySaver()
+    try:
+        db_url = os.getenv("DATABASE_URL", "")
+        if not db_url:
+            return MemorySaver()
+        conn = psycopg.connect(db_url, autocommit=True, prepare_threshold=0)
+        checkpointer = PostgresSaver(conn)
+        if not _pg_checkpointer_setup_done:
+            checkpointer.setup()
+            _pg_checkpointer_setup_done = True
+        return checkpointer
+    except Exception as e:
+        _log.warning("PostgresSaver unavailable, falling back to MemorySaver: %s", e)
+        return MemorySaver()
 
 
 def _extract_sql_query(text: str) -> str:
@@ -54,6 +89,13 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
             raw = (previous_results.get('SQL_GENERATION') or params.get('query') or '').strip()
         query = _extract_sql_query(raw)
         params = {**params, 'query': query}
+    if action_type == 'VISUALIZATION_EXECUTION':
+        override_code = overrides.get('code', '').strip()
+        if override_code:
+            raw_code = override_code
+        else:
+            raw_code = (previous_results.get('VISUALIZATION_CODE_GENERATION') or params.get('code') or '').strip()
+        params = {**params, 'code': raw_code}
     user_request = conversation_history[-1].content if conversation_history else ''
 
     action_def = get_action(action_type)
@@ -72,9 +114,10 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
         if action_def.prompt is None:
             result = f"Action '{action_type}' is LLM-based but has no prompt defined"
         else:
+            safe_results = {k: v for k, v in previous_results.items() if not k.startswith("__")}
             invoke_vars = {
                 "conversation_history": conversation_history,
-                "previous_results": previous_results,
+                "previous_results": safe_results,
                 "user_request": user_request,
                 "description": description,
             }
@@ -86,7 +129,8 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
 
             record("llm_call",
                    action_type=action_type,
-                   prompt_vars={k: v for k, v in invoke_vars.items() if k != "conversation_history"},
+                   prompt_vars={k: v for k, v in invoke_vars.items()
+                                if k not in ("conversation_history",)},
                    message_count=len(conversation_history))
 
             effective_llm = get_llm_for_action(action_type)
@@ -121,10 +165,20 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
     record("action_end",
            action_type=action_type, kind=kind,
            duration_ms=duration_ms,
-           result=str(result))
+           result=str(result)[:500])
 
     updated_results = {**previous_results, action_type: result}
-    
+
+    if action_type == "VISUALIZATION_EXECUTION":
+        try:
+            parsed = json.loads(result)
+            updated_results[action_type] = parsed.get("description", result)
+            img_md = parsed.get("image_markdown", "")
+            if img_md:
+                updated_results["__VISUALIZATION_IMAGE__"] = img_md
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return {
         "previous_results": updated_results,
     }
@@ -164,10 +218,11 @@ def create_execution_graph(
     if not actions:
         return None, None
 
-    # Enforce: SQL_EXECUTION only after SQL_GENERATION (drop SQL_EXECUTION if no SQL_GENERATION in plan)
     action_types = {a.get('action_type') for a in actions}
     if 'SQL_EXECUTION' in action_types and 'SQL_GENERATION' not in action_types:
         actions = [a for a in actions if a.get('action_type') != 'SQL_EXECUTION']
+    if 'VISUALIZATION_EXECUTION' in action_types and 'VISUALIZATION_CODE_GENERATION' not in action_types:
+        actions = [a for a in actions if a.get('action_type') != 'VISUALIZATION_EXECUTION']
     if not actions:
         return None, None
 
@@ -203,8 +258,7 @@ def create_execution_graph(
             for node in current_group:
                 graph.add_edge(node, END)
 
-    # Always use checkpointer for state tracking and debugging
-    checkpointer = MemorySaver()
+    checkpointer = get_checkpointer()
 
     node_names_in_graph = {a.get("action_type", "unknown") for a in sorted_actions}
     if enable_hitl and hitl_before:

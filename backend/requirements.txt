@@ -1,4 +1,5 @@
 langgraph
+langgraph-checkpoint-postgres
 langchain-community
 langchain-openai
 pypdf
@@ -7,6 +8,10 @@ wikipedia
 langchain-tavily
 python-dotenv
 psycopg2-binary
+psycopg[binary]
 PyYAML
 Flask
 flask-cors
+matplotlib
+numpy
+pandas

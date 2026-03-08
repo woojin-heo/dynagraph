@@ -5,7 +5,11 @@ Responsible for converting user requests into a structured action plans.
 """
 from typing import Optional, Dict, Any, List, Union
 import json
+import re
+import logging
 from .state import AgentState
+
+logger = logging.getLogger(__name__)
 from .prompt_lib import PLANNING_PROMPT, TOOLS_DESCRIPTION, get_available_documents
 from .trace import traced, record
 
@@ -14,6 +18,52 @@ try:
 except ImportError:
     from db import get_available_tables
 from .runtime import LLM
+
+def _parse_llm_json(raw: str) -> Dict[str, Any]:
+    """Parse JSON from LLM output, handling common formatting issues."""
+    text = raw.strip()
+
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    # First attempt: direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Second attempt: extract the first top-level JSON object
+    brace_start = text.find("{")
+    if brace_start != -1:
+        depth, end = 0, brace_start
+        for i in range(brace_start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        candidate = text[brace_start:end]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+        # Third attempt: fix trailing commas before } or ]
+        cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+    logger.error("Failed to parse planning LLM response as JSON: %s", raw[:500])
+    raise ValueError(
+        f"Planning LLM returned unparseable JSON. Raw response (first 300 chars): {raw[:300]}"
+    )
+
 
 def _format_conversation_previous_results(
     results: Union[List[Dict[str, Any]], Dict[str, Any]]
@@ -131,7 +181,7 @@ def planning_agent(state: AgentState,
 
     record("planning_llm_response", raw_response=planning_result.content)
 
-    planning_response = json.loads(planning_result.content)
+    planning_response = _parse_llm_json(planning_result.content)
     need_clarification = planning_response.get("need_clarification", False)
     actions = planning_response.get("actions", [])
 

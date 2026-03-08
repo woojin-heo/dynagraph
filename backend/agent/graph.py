@@ -11,7 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import AgentState
 from .actions import get_action, CORRECTION_PROMPT, SQL_CORRECTION_PROMPT
-from .runtime import LLM, get_llm_for_action
+from .llm_config import LLM, get_llm_for_action
 from .trace import record
 
 _log = logging.getLogger(__name__)

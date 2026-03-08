@@ -10,8 +10,8 @@ python-dotenv
 psycopg2-binary
 psycopg[binary]
 PyYAML
-Flask
-flask-cors
+fastapi
+uvicorn[standard]
 matplotlib
 numpy
 pandas

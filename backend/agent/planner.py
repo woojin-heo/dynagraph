@@ -17,7 +17,7 @@ try:
     from backend.db import get_available_tables
 except ImportError:
     from db import get_available_tables
-from .runtime import LLM
+from .llm_config import LLM
 
 def _parse_llm_json(raw: str) -> Dict[str, Any]:
     """Parse JSON from LLM output, handling common formatting issues."""

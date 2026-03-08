@@ -2,14 +2,11 @@ import re
 import time
 import logging
 from typing import Dict, Any, Optional, Generator, List
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
-from dotenv import load_dotenv
 import uuid
 
-load_dotenv()
-
 from .trace import TraceCollector, set_current_trace, reset_current_trace
+from .llm_config import LLM
 
 _log = logging.getLogger(__name__)
 
@@ -41,22 +38,7 @@ def _format_references(sources: List[str]) -> str:
             items.append(s)
     return "\n\nreferences:\n" + "\n".join(f"- {item}" for item in items)
 
-DEFAULT_MODEL = "gpt-4o-mini"
-LLM = ChatOpenAI(model=DEFAULT_MODEL, temperature=0)
-
-ACTION_LLM_OVERRIDES: dict[str, dict] = {
-    "SQL_GENERATION": {"model": "gpt-4o", "temperature": 0},
-}
-
-
-def get_llm_for_action(action_type: str) -> ChatOpenAI:
-    """Return the LLM for a given action: override if configured, else default."""
-    cfg = ACTION_LLM_OVERRIDES.get(action_type)
-    if cfg:
-        return ChatOpenAI(**cfg)
-    return LLM
-
-# These imports come after LLM definition to avoid circular import issues
+# These imports come after core setup to avoid circular import issues
 from .state import AgentState
 from .planner import planning_agent
 from .graph import (

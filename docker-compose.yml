@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: dynagraph
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: dynagraph
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dynagraph"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      DATABASE_URL: postgresql://dynagraph:${POSTGRES_PASSWORD:-changeme}@db:5432/dynagraph
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      PORT: "5001"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "5001:5001"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

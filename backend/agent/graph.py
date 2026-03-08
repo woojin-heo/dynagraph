@@ -10,7 +10,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import AgentState
-from .actions import get_action
+from .actions import get_action, CORRECTION_PROMPT, SQL_CORRECTION_PROMPT
 from .runtime import LLM, get_llm_for_action
 from .trace import record
 
@@ -65,13 +65,110 @@ except ImportError:
     from db import get_schema_for_prompt
 
 
+def _is_error(result: str, action_def) -> bool:
+    """Check whether an action result looks like an error."""
+    if not isinstance(result, str):
+        return False
+    patterns = (action_def.error_patterns
+                if action_def and action_def.error_patterns
+                else [r"^Error[\s:]"])
+    return any(re.search(p, result, re.MULTILINE) for p in patterns)
+
+
+def _execute_single(action_def, action_type: str, params: dict,
+                     invoke_vars: dict, conversation_history: list) -> str:
+    """Run one attempt of an LLM or tool action and return the raw result string."""
+    if action_def is None:
+        return f"Action '{action_type}' not found in ACTION_REGISTRY"
+
+    if action_def.kind == "llm":
+        if action_def.prompt is None:
+            return f"Action '{action_type}' is LLM-based but has no prompt defined"
+
+        record("llm_call",
+               action_type=action_type,
+               prompt_vars={k: v for k, v in invoke_vars.items()
+                            if k not in ("conversation_history",)},
+               message_count=len(conversation_history))
+
+        effective_llm = get_llm_for_action(action_type)
+        chain = action_def.prompt | effective_llm
+        llm_result = chain.invoke(invoke_vars)
+        result = llm_result.content
+
+        record("llm_response", action_type=action_type, response=result)
+
+        if action_type == "SQL_GENERATION":
+            result = _extract_sql_query(result) or result
+        return result
+
+    if action_def.kind == "tool":
+        if action_def.tool is None:
+            return f"Action '{action_type}' is tool-based but tool not implemented"
+
+        record("tool_call",
+               action_type=action_type,
+               tool_name=action_def.tool.name if hasattr(action_def.tool, 'name') else action_type,
+               params=params)
+        result = action_def.tool.invoke(params)
+        record("tool_response", action_type=action_type, result=str(result))
+        return result
+
+    return f"Action '{action_type}' has unknown kind: {action_def.kind}"
+
+
+def _invoke_correction(corrector_action_type: str, error_message: str,
+                        previous_output: str, description: str,
+                        previous_results: dict) -> str:
+    """Re-invoke the upstream LLM with error context to produce a corrected output."""
+    safe_results = {k: v for k, v in previous_results.items() if not k.startswith("__")}
+    correction_vars = {
+        "description": description,
+        "previous_output": previous_output,
+        "error_message": error_message,
+        "previous_results": safe_results,
+    }
+
+    if corrector_action_type == "SQL_GENERATION":
+        prompt = SQL_CORRECTION_PROMPT
+        try:
+            correction_vars["db_schema"] = get_schema_for_prompt()
+        except Exception:
+            correction_vars["db_schema"] = ""
+    else:
+        prompt = CORRECTION_PROMPT
+
+    record("correction_call",
+           corrector=corrector_action_type,
+           error_message=error_message[:300])
+
+    effective_llm = get_llm_for_action(corrector_action_type)
+    chain = prompt | effective_llm
+    corrected = chain.invoke(correction_vars).content
+
+    record("correction_response",
+           corrector=corrector_action_type,
+           corrected=corrected[:500])
+
+    if corrector_action_type == "SQL_GENERATION":
+        corrected = _extract_sql_query(corrected) or corrected
+    return corrected
+
+
+_CORRECTOR_PARAM_KEY: Dict[str, str] = {
+    "SQL_EXECUTION": "query",
+    "VISUALIZATION_EXECUTION": "code",
+}
+
+
 def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[str, Any]:
     """
-    Execute an action based on its type.
-    - LLM based actions: prompt | llm chain execution
-    - Tool based actions: call the tool function
-    
-    Returns state updates (previous_results will be updated with this action's result)
+    Execute an action based on its type, with automatic retry/self-correction.
+
+    For tool actions configured with ``max_retries`` and ``corrector_action``
+    (e.g. SQL_EXECUTION → SQL_GENERATION), failed attempts trigger the
+    upstream LLM to regenerate its output with the error as context, then the
+    tool is retried with the corrected input.
     """
     action_type = action.get('action_type', 'unknown')
     description = action.get('description', '')
@@ -81,14 +178,14 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
 
     conversation_history = state.get('messages', [])[-10:]
     previous_results = state.get('previous_results', {})
+
     if action_type == 'SQL_EXECUTION':
         override_query = overrides.get('query', '').strip()
         if override_query:
             raw = override_query
         else:
             raw = (previous_results.get('SQL_GENERATION') or params.get('query') or '').strip()
-        query = _extract_sql_query(raw)
-        params = {**params, 'query': query}
+        params = {**params, 'query': _extract_sql_query(raw)}
     if action_type == 'VISUALIZATION_EXECUTION':
         override_code = overrides.get('code', '').strip()
         if override_code:
@@ -96,6 +193,7 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
         else:
             raw_code = (previous_results.get('VISUALIZATION_CODE_GENERATION') or params.get('code') or '').strip()
         params = {**params, 'code': raw_code}
+
     user_request = conversation_history[-1].content if conversation_history else ''
 
     action_def = get_action(action_type)
@@ -108,66 +206,79 @@ def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[
 
     t0 = time.time()
 
-    if action_def is None:
-        result = f"Action '{action_type}' not found in ACTION_REGISTRY"
-    elif action_def.kind == "llm":
-        if action_def.prompt is None:
-            result = f"Action '{action_type}' is LLM-based but has no prompt defined"
+    safe_results = {k: v for k, v in previous_results.items() if not k.startswith("__")}
+    invoke_vars = {
+        "conversation_history": conversation_history,
+        "previous_results": safe_results,
+        "user_request": user_request,
+        "description": description,
+    }
+    if action_type == "SQL_GENERATION":
+        try:
+            invoke_vars["db_schema"] = get_schema_for_prompt()
+        except Exception:
+            invoke_vars["db_schema"] = ""
+
+    max_retries = action_def.max_retries if action_def else 0
+    corrector_action = action_def.corrector_action if action_def else None
+    param_key = _CORRECTOR_PARAM_KEY.get(action_type)
+
+    result = _execute_single(action_def, action_type, params,
+                             invoke_vars, conversation_history)
+
+    retry_info = None
+    if max_retries > 0 and _is_error(result, action_def):
+        last_error = result
+        previous_output = params.get(param_key, "") if param_key else ""
+
+        for attempt in range(1, max_retries + 1):
+            record("retry_attempt",
+                   action_type=action_type,
+                   attempt=attempt,
+                   max_retries=max_retries,
+                   error=str(last_error)[:300])
+
+            if corrector_action:
+                corrected = _invoke_correction(
+                    corrector_action, str(last_error),
+                    previous_output, description, previous_results,
+                )
+                if param_key:
+                    params[param_key] = corrected
+                    previous_output = corrected
+                    previous_results = {**previous_results, corrector_action: corrected}
+
+            result = _execute_single(action_def, action_type, params,
+                                     invoke_vars, conversation_history)
+
+            if not _is_error(result, action_def):
+                record("retry_success",
+                       action_type=action_type, attempt=attempt)
+                retry_info = {"attempts": attempt, "succeeded": True}
+                break
+            last_error = result
         else:
-            safe_results = {k: v for k, v in previous_results.items() if not k.startswith("__")}
-            invoke_vars = {
-                "conversation_history": conversation_history,
-                "previous_results": safe_results,
-                "user_request": user_request,
-                "description": description,
+            record("retry_exhausted",
+                   action_type=action_type,
+                   attempts=max_retries,
+                   last_error=str(last_error)[:300])
+            retry_info = {
+                "attempts": max_retries,
+                "succeeded": False,
+                "last_error": str(last_error)[:300],
             }
-            if action_type == "SQL_GENERATION":
-                try:
-                    invoke_vars["db_schema"] = get_schema_for_prompt()
-                except Exception:
-                    invoke_vars["db_schema"] = ""
-
-            record("llm_call",
-                   action_type=action_type,
-                   prompt_vars={k: v for k, v in invoke_vars.items()
-                                if k not in ("conversation_history",)},
-                   message_count=len(conversation_history))
-
-            effective_llm = get_llm_for_action(action_type)
-            chain = action_def.prompt | effective_llm
-            llm_result = chain.invoke(invoke_vars)
-            result = llm_result.content
-
-            record("llm_response",
-                   action_type=action_type,
-                   response=result)
-
-            if action_type == "SQL_GENERATION":
-                result = _extract_sql_query(result) or result
-    elif action_def.kind == "tool":
-        if action_def.tool is None:
-            result = f"Action '{action_type}' is tool-based but tool not implemented"
-        else:
-            record("tool_call",
-                   action_type=action_type,
-                   tool_name=action_def.tool.name if hasattr(action_def.tool, 'name') else action_type,
-                   params=params)
-
-            result = action_def.tool.invoke(params)
-
-            record("tool_response",
-                   action_type=action_type,
-                   result=str(result))
-    else:
-        result = f"Action '{action_type}' has unknown kind: {action_def.kind}"
 
     duration_ms = round((time.time() - t0) * 1000, 1)
     record("action_end",
            action_type=action_type, kind=kind,
            duration_ms=duration_ms,
-           result=str(result)[:500])
+           result=str(result)[:500],
+           retried=retry_info is not None)
 
     updated_results = {**previous_results, action_type: result}
+
+    if retry_info is not None:
+        updated_results[f"__{action_type}_RETRY_INFO__"] = retry_info
 
     if action_type == "VISUALIZATION_EXECUTION":
         try:

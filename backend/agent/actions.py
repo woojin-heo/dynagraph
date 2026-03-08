@@ -7,7 +7,7 @@ This makes it easy to:
 2. Debug missing actions
 3. Add new actions consistently
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Callable, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -22,6 +22,9 @@ class ActionDefinition:
     prompt: Optional[ChatPromptTemplate] = None  # for LLM actions
     tool: Optional[Callable] = None  # for tool actions
     description: str = ""  # human-readable description
+    max_retries: int = 0
+    corrector_action: Optional[str] = None
+    error_patterns: list = field(default_factory=lambda: [r"^Error[\s:]"])
 
 
 # =============================================================================
@@ -110,6 +113,51 @@ Rules:
 ])
 
 # =============================================================================
+# Correction prompts (used by retry/fallback in action_executor)
+# =============================================================================
+
+CORRECTION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """Your previous output caused an error during execution. Fix it.
+
+Original task: {description}
+
+Your previous output:
+{previous_output}
+
+Error that occurred:
+{error_message}
+
+Previous results from other actions:
+{previous_results}
+
+Output ONLY the corrected result. No explanation."""),
+    ("human", "Fix and regenerate."),
+])
+
+SQL_CORRECTION_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """Your previous SQL query caused an execution error. Fix it.
+
+Database schema (CREATE TABLE definitions):
+{db_schema}
+
+Original task: {description}
+
+Your previous SQL query:
+{previous_output}
+
+Error that occurred:
+{error_message}
+
+Previous results from other actions:
+{previous_results}
+
+Rules:
+1. Use ONLY the table and column names from the schema above.
+2. Output a single executable PostgreSQL SQL statement. No markdown, no code fences, no explanation."""),
+    ("human", "Fix and regenerate the SQL query."),
+])
+
+# =============================================================================
 # Action Registry
 # =============================================================================
 
@@ -164,6 +212,8 @@ ACTION_REGISTRY: Dict[str, ActionDefinition] = {
         kind="tool",
         tool=sql_execution,
         description="Execute SQL query and return the result",
+        max_retries=2,
+        corrector_action="SQL_GENERATION",
     ),
     "VISUALIZATION_CODE_GENERATION": ActionDefinition(
         action_type="VISUALIZATION_CODE_GENERATION",
@@ -176,6 +226,9 @@ ACTION_REGISTRY: Dict[str, ActionDefinition] = {
         kind="tool",
         tool=visualization_execution,
         description="Execute visualization code and return chart image",
+        max_retries=2,
+        corrector_action="VISUALIZATION_CODE_GENERATION",
+        error_patterns=[r"^Error[\s:]", r"Error generating chart"],
     ),
 }
 

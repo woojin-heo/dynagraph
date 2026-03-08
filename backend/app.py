@@ -419,14 +419,28 @@ def api_state():
     conversation_id = request.args.get("conversation_id")
     if not conversation_id:
         return jsonify({"state": None, "message": "conversation_id required"}), 400
-    agent = _get_agent(tenant_id, conversation_id)
+
+    agent = _get_or_restore_agent(tenant_id, conversation_id)
     if not agent:
         return jsonify({"state": None, "message": "No conversation state yet. Send a message to start."}), 200
-    if not agent.current_graph or not agent.thread_id:
-        return jsonify({"state": None, "message": "No active run (not paused, no graph)"}), 200
-    state = get_current_state(agent.current_graph, agent.thread_id)
-    serialized = _serialize_state(state)
-    return jsonify({"state": serialized})
+
+    # If there's an active LangGraph run, show its live execution state
+    if agent.current_graph and agent.thread_id:
+        state = get_current_state(agent.current_graph, agent.thread_id)
+        serialized = _serialize_state(state)
+        return jsonify({"state": serialized})
+
+    # Otherwise, return the persisted conversation state from DB
+    messages = [_serialize_message(m) for m in agent.get_conversation_history()]
+    last_turn = agent.conversation_previous_results[-1] if agent.conversation_previous_results else {}
+    return jsonify({"state": {
+        "messages": messages,
+        "previous_results": last_turn.get("actions", []),
+        "plan": last_turn.get("plan", ""),
+        "actions": last_turn.get("actions", []),
+        "turn_number": agent._turn_number,
+        "conversation_previous_results": agent.conversation_previous_results,
+    }})
 
 
 @app.route("/api/graph", methods=["GET"])
@@ -520,4 +534,5 @@ def api_tables():
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug)

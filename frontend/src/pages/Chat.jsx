@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import { chatStream, resumeStream, getConversation } from '../api'
 import { useTenant } from '../TenantContext'
 import Graph from './Graph'
@@ -330,6 +330,7 @@ function Chat() {
                 <div className="message-content">
                   {m.role === 'ai' ? (
                     <ReactMarkdown
+                      urlTransform={(url) => url.startsWith('data:image/') ? url : defaultUrlTransform(url)}
                       components={{
                         a: ({ node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
                         img: ({ node, ...props }) => (

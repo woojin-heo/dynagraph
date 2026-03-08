@@ -33,7 +33,7 @@ Communicates with the backend via REST and Server-Sent Events (SSE) for streamin
     - Vector DB document list
     - state debug. 
     
-- **Backend API** (Flask)
+- **Backend API** (FastAPI)
     - Session-per-conversation `ConversationAgent`
     - exposes 
         - `/api/chat` (SSE)
@@ -60,7 +60,7 @@ flowchart TB
     Views[Graph / Documents / State]
   end
   subgraph api [Backend API]
-    Flask[Flask]
+    FastAPI[FastAPI]
   end
   subgraph agent [Agent Core]
     Planner[Planner LLM]
@@ -70,10 +70,10 @@ flowchart TB
   subgraph data [Data]
     PG[(PostgreSQL)]
   end
-  Chat -->|POST /api/chat SSE| Flask
-  HITL -->|POST /api/resume SSE| Flask
-  Views -->|GET /api/*| Flask
-  Flask --> Planner
+  Chat -->|POST /api/chat SSE| FastAPI
+  HITL -->|POST /api/resume SSE| FastAPI
+  Views -->|GET /api/*| FastAPI
+  FastAPI --> Planner
   Planner -->|plan, actions| Graph
   Graph --> Actions
   Actions --> PG
@@ -86,7 +86,7 @@ Run the backend, then the frontend:
 # Backend (from repo root; port 5001 to avoid conflict with AirPlay on macOS)
 pip install -r backend/requirements.txt
 PYTHONPATH=. python -m backend.app
-# or: FLASK_APP=backend.app:app PYTHONPATH=. flask run --port=5001
+# or: PYTHONPATH=. uvicorn backend.app:app --host 0.0.0.0 --port=5001
 
 # Frontend (another terminal)
 cd frontend && npm install && npm run dev

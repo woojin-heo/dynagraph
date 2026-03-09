@@ -11,7 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import AgentState
 from .actions import get_action, CORRECTION_PROMPT, SQL_CORRECTION_PROMPT
-from .llm_config import LLM, get_llm_for_action
+from .llm_config import get_llm_for_action
 from .trace import record
 
 _log = logging.getLogger(__name__)
@@ -161,7 +161,7 @@ _CORRECTOR_PARAM_KEY: Dict[str, str] = {
 }
 
 
-def action_executor(action: Dict[str, Any], state: AgentState, llm=LLM) -> Dict[str, Any]:
+def action_executor(action: Dict[str, Any], state: AgentState) -> Dict[str, Any]:
     """
     Execute an action based on its type, with automatic retry/self-correction.
 

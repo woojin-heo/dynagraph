@@ -9,7 +9,7 @@ This document describes implementation details for conversation memory, session 
 ### Where it lives
 
 - **State shape**: Conversation history is stored in `AgentState.messages` (`backend/agent/state.py`). The field is typed as `Annotated[List[BaseMessage], add_messages]`, so LangGraph’s `add_messages` reducer is used when multiple nodes update `messages` (e.g. appending assistant turns).
-- **Scope**: When using **ConversationAgent**, memory is in-memory and **scoped to the agent instance**: `messages` and `conversation_previous_results` are accumulated across `agent.run()` calls. When using **run_agent()**, each call creates a new ConversationAgent, so there is no persistence across calls.
+- **Scope**: Memory is in-memory and **scoped to the ConversationAgent instance**: `messages` and `conversation_previous_results` are accumulated across `agent.run()` calls while the same agent object is reused.
 - **Turn-based cache**: `conversation_previous_results` keeps the planner’s plan shape and attaches execution results per turn: `[{"turn": 1, "plan": "...", "need_clarification": false, "actions": [{"action_type": "...", "description": "...", "dependencies": [...], "execution_order": N, "result": "..."}, ...]}, ...]`. This makes it easy to see “what was the plan for turn N” and “what was the result of each action” when planning (e.g. for CONTEXT_REFERENCE).
 
 ### How it’s used
@@ -24,7 +24,7 @@ This document describes implementation details for conversation memory, session 
 | Storage | In-memory only; part of `AgentState` |
 | Reducer | `add_messages` (LangGraph) for `messages` |
 | Window | Last 10 messages in planner and in action nodes |
-| Cross-run | Yes when reusing one ConversationAgent; no when using run_agent() (new agent per call) |
+| Cross-run | Yes when reusing one ConversationAgent instance; no when creating a new agent per call |
 
 ---
 

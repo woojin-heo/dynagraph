@@ -1,6 +1,6 @@
 """
 FastAPI backend for dynagraph: chat (SSE), resume (HITL), conversation, state, graph, documents.
-Multi-tenant: every request scoped by X-Tenant-ID header.
+Multi-tenant: every request scoped by JWT Bearer token.
 Run from repo root: PYTHONPATH=. uvicorn backend.app:app --host 0.0.0.0 --port 5001
 """
 import json
@@ -8,22 +8,24 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+import jwt
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.agent.graph import get_current_state, get_graph_mermaid
 from backend.agent.runtime import ConversationAgent
+from backend.auth import create_access_token, decode_token, hash_password, verify_password
 from backend.db.tenant import (
     conversation_belongs_to_tenant,
     create_conversation,
-    create_tenant,
+    create_tenant_with_credentials,
     delete_conversation,
     delete_tenant,
     ensure_tables,
     get_tenant,
+    get_tenant_by_username,
     list_conversations,
-    list_tenants,
     touch_conversation,
 )
 
@@ -35,14 +37,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Tenant-ID"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # In-memory store: (tenant_id, conversation_id) -> ConversationAgent
 _agents: Dict[tuple, ConversationAgent] = {}
 
 HITL_BEFORE = ["SQL_EXECUTION"]
-TENANT_EXEMPT_PREFIXES = ("/api/health", "/api/tenants", "/docs", "/redoc", "/openapi.json")
+AUTH_EXEMPT_PREFIXES = ("/api/health", "/api/auth", "/docs", "/redoc", "/openapi.json")
 
 # Bootstrap DB tables on import (idempotent)
 try:
@@ -205,24 +207,29 @@ def _filter_event(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.middleware("http")
-async def require_tenant(request: Request, call_next):
-    """Extract and validate X-Tenant-ID header. Sets request.state.tenant_id."""
+async def require_auth(request: Request, call_next):
+    """Validate JWT Bearer token. Sets request.state.tenant_id."""
     if request.method == "OPTIONS":
         return await call_next(request)
 
     path = request.url.path
-    if any(path.startswith(prefix) for prefix in TENANT_EXEMPT_PREFIXES):
+    if any(path.startswith(prefix) for prefix in AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
 
-    tenant_id = request.headers.get("X-Tenant-ID", "").strip()
-    if not tenant_id:
-        return JSONResponse({"error": "X-Tenant-ID header is required"}, status_code=400)
+    auth_header = request.headers.get("Authorization", "").strip()
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "Authorization header with Bearer token is required"},
+                            status_code=401)
 
-    tenant = get_tenant(tenant_id)
-    if not tenant:
-        return JSONResponse({"error": f"Tenant '{tenant_id}' not found"}, status_code=404)
+    token = auth_header[len("Bearer "):]
+    try:
+        payload = decode_token(token)
+    except jwt.ExpiredSignatureError:
+        return JSONResponse({"error": "Token expired"}, status_code=401)
+    except jwt.InvalidTokenError:
+        return JSONResponse({"error": "Invalid token"}, status_code=401)
 
-    request.state.tenant_id = tenant_id
+    request.state.tenant_id = payload["sub"]
     return await call_next(request)
 
 
@@ -266,36 +273,79 @@ def api_config():
     }
 
 
-@app.get("/api/tenants")
-def api_tenants_list():
-    return list_tenants()
-
-
-@app.post("/api/tenants")
-async def api_tenants_create(request: Request):
+@app.post("/api/auth/register")
+async def api_auth_register(request: Request):
     body = await _json_body(request)
-    name = (body.get("name") or "").strip()
-    if not name:
-        return JSONResponse({"error": "name is required"}, status_code=400)
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    display_name = (body.get("display_name") or username).strip()
+
+    if not username:
+        return JSONResponse({"error": "username is required"}, status_code=400)
+    if len(password) < 8:
+        return JSONResponse({"error": "password must be at least 8 characters"}, status_code=400)
+    if not display_name:
+        display_name = username
+
     try:
-        tenant = create_tenant(name, tenant_id=body.get("id"))
-        return JSONResponse(tenant, status_code=201)
+        pwd_hash = hash_password(password)
+        tenant = create_tenant_with_credentials(username, pwd_hash, display_name)
     except Exception as e:
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
-            return JSONResponse({"error": f"Tenant name '{name}' already exists"}, status_code=409)
+            return JSONResponse({"error": "Username already taken"}, status_code=409)
         return JSONResponse({"error": str(e)}, status_code=500)
 
+    token = create_access_token(tenant["id"], tenant["username"], tenant["name"])
+    return JSONResponse({
+        "access_token": token,
+        "token_type": "bearer",
+        "tenant_id": tenant["id"],
+        "username": tenant["username"],
+        "display_name": tenant["name"],
+    }, status_code=201)
 
-@app.get("/api/tenants/{tenant_id}")
-def api_tenant_get(tenant_id: str):
+
+@app.post("/api/auth/login")
+async def api_auth_login(request: Request):
+    body = await _json_body(request)
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
+    if not username or not password:
+        return JSONResponse({"error": "username and password are required"}, status_code=400)
+
+    tenant = get_tenant_by_username(username)
+    if not tenant or not tenant.get("password_hash"):
+        return JSONResponse({"error": "Invalid username or password"}, status_code=401)
+    if not verify_password(password, tenant["password_hash"]):
+        return JSONResponse({"error": "Invalid username or password"}, status_code=401)
+
+    token = create_access_token(tenant["id"], tenant["username"], tenant["name"])
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "tenant_id": tenant["id"],
+        "username": tenant["username"],
+        "display_name": tenant["name"],
+    }
+
+
+@app.get("/api/auth/me")
+def api_auth_me(request: Request):
+    tenant_id = _tenant_id(request)
     tenant = get_tenant(tenant_id)
     if not tenant:
-        return JSONResponse({"error": "Tenant not found"}, status_code=404)
-    return tenant
+        return JSONResponse({"error": "User not found"}, status_code=404)
+    return {
+        "tenant_id": tenant_id,
+        "display_name": tenant["name"],
+    }
 
 
 @app.delete("/api/tenants/{tenant_id}")
-def api_tenant_delete(tenant_id: str):
+def api_tenant_delete(tenant_id: str, request: Request):
+    if _tenant_id(request) != tenant_id:
+        return JSONResponse({"error": "Forbidden"}, status_code=403)
     keys_to_remove = [k for k in _agents if k[0] == tenant_id]
     for key in keys_to_remove:
         del _agents[key]

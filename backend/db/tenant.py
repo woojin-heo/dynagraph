@@ -2,7 +2,7 @@
 Multi-tenant support: tenants and conversations tables.
 
 Tables:
-  tenants       – id (uuid PK), name (unique), created_at
+  tenants       – id (uuid PK), name (unique), username (unique), password_hash, created_at
   conversations – id (uuid PK), tenant_id (FK), title, created_at, updated_at
 
 Provides CRUD helpers and an ensure_tables() bootstrap that creates both tables
@@ -22,9 +22,11 @@ def ensure_tables() -> None:
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS tenants (
-                    id         TEXT PRIMARY KEY,
-                    name       TEXT NOT NULL UNIQUE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    id            TEXT PRIMARY KEY,
+                    name          TEXT NOT NULL UNIQUE,
+                    username      TEXT UNIQUE,
+                    password_hash TEXT,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
             """)
             cur.execute("""
@@ -48,10 +50,17 @@ def ensure_tables() -> None:
                 ("messages", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
                 ("turn_results", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
                 ("turn_number", "INTEGER NOT NULL DEFAULT 0"),
+                ("username", "TEXT UNIQUE"),
+                ("password_hash", "TEXT"),
             ]:
                 cur.execute(f"""
                     DO $$ BEGIN
                         ALTER TABLE conversations ADD COLUMN {col} {defn};
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$;
+                """) if col in ("messages", "turn_results", "turn_number") else cur.execute(f"""
+                    DO $$ BEGIN
+                        ALTER TABLE tenants ADD COLUMN {col} {defn};
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
@@ -63,6 +72,44 @@ def ensure_tables() -> None:
 # ---------------------------------------------------------------------------
 # Tenant CRUD
 # ---------------------------------------------------------------------------
+
+def create_tenant_with_credentials(username: str, password_hash: str,
+                                   display_name: str) -> Dict[str, Any]:
+    """Create a tenant with login credentials. Returns tenant dict."""
+    tid = str(uuid.uuid4())
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO tenants (id, name, username, password_hash)
+                   VALUES (%s, %s, %s, %s)
+                   RETURNING id, name, username, created_at""",
+                (tid, display_name, username, password_hash),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {"id": row[0], "name": row[1], "username": row[2],
+                "created_at": row[3].isoformat()}
+    finally:
+        conn.close()
+
+
+def get_tenant_by_username(username: str) -> Optional[Dict[str, Any]]:
+    """Return tenant dict (including password_hash) for login, or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, name, username, password_hash FROM tenants WHERE username = %s",
+                (username,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "name": row[1], "username": row[2], "password_hash": row[3]}
+    finally:
+        conn.close()
+
 
 def create_tenant(name: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
     """Insert a new tenant. Returns {"id", "name", "created_at"}."""

@@ -1,77 +1,38 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Routes, Route, Link, useNavigate } from 'react-router-dom'
-import { useTenant } from './TenantContext'
+import { Routes, Route, Link, Navigate, useNavigate } from 'react-router-dom'
+import { useAuth } from './AuthContext'
 import { getConversations, deleteConversation } from './api'
 import Chat from './pages/Chat'
 import Graph from './pages/Graph'
 import Documents from './pages/Documents'
 import State from './pages/State'
+import Login from './pages/Login'
+import Register from './pages/Register'
 import './App.css'
 
-function TenantSelector() {
-  const { tenantId, tenantName, tenants, setTenant, createTenant, refreshTenants } = useTenant()
-  const [showCreate, setShowCreate] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [error, setError] = useState(null)
+function ProtectedRoute({ children }) {
+  const { isAuthenticated, loading } = useAuth()
+  if (loading) return <div className="auth-loading">Loading…</div>
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  return children
+}
 
-  const handleCreate = async () => {
-    const name = newName.trim()
-    if (!name) return
-    setError(null)
-    try {
-      await createTenant(name)
-      setNewName('')
-      setShowCreate(false)
-    } catch (e) {
-      setError(e.message)
-    }
-  }
-
+function UserMenu() {
+  const { user, logout } = useAuth()
   return (
-    <div className="tenant-selector">
-      <select
-        value={tenantId || ''}
-        onChange={(e) => {
-          const id = e.target.value
-          if (!id) { setTenant(null, null); return }
-          const t = tenants.find((t) => t.id === id)
-          setTenant(id, t?.name || '')
-        }}
-      >
-        <option value="">Select tenant…</option>
-        {tenants.map((t) => (
-          <option key={t.id} value={t.id}>{t.name}</option>
-        ))}
-      </select>
-      {!showCreate ? (
-        <button type="button" className="tenant-add-btn" onClick={() => setShowCreate(true)} title="New tenant">+</button>
-      ) : (
-        <span className="tenant-create-inline">
-          <input
-            type="text"
-            placeholder="Tenant name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleCreate() }}
-            autoFocus
-          />
-          <button type="button" onClick={handleCreate}>Create</button>
-          <button type="button" onClick={() => { setShowCreate(false); setError(null) }}>Cancel</button>
-        </span>
-      )}
-      {error && <span className="tenant-error">{error}</span>}
+    <div className="user-menu">
+      <span className="user-display-name">{user?.display_name}</span>
+      <button type="button" className="signout-btn" onClick={logout}>Sign out</button>
     </div>
   )
 }
 
 function ConversationList() {
-  const { tenantId } = useTenant()
   const [conversations, setConversations] = useState([])
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
   const refresh = useCallback(async () => {
-    if (!tenantId) { setConversations([]); return }
     setLoading(true)
     try {
       const data = await getConversations()
@@ -81,7 +42,7 @@ function ConversationList() {
     } finally {
       setLoading(false)
     }
-  }, [tenantId])
+  }, [])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -93,8 +54,6 @@ function ConversationList() {
       refresh()
     } catch (_) {}
   }
-
-  if (!tenantId) return null
 
   return (
     <div className="conversation-list">
@@ -119,9 +78,7 @@ function ConversationList() {
   )
 }
 
-function App() {
-  const { tenantId } = useTenant()
-
+function AppLayout() {
   return (
     <div className="app">
       <nav className="nav">
@@ -129,26 +86,33 @@ function App() {
           <Link to="/">Chat</Link>
           <Link to="/documents">Documents</Link>
         </div>
-        <TenantSelector />
+        <UserMenu />
       </nav>
-      {tenantId && <ConversationList />}
+      <ConversationList />
       <main className="main">
-        {!tenantId ? (
-          <div className="tenant-gate">
-            <h2>Select a tenant to start</h2>
-            <p>Create a new tenant or select an existing one from the top-right dropdown.</p>
-          </div>
-        ) : (
-          <Routes>
-            <Route path="/" element={<Chat />} />
-            <Route path="/conversation/:id" element={<Chat />} />
-            <Route path="/conversation/:id/graph" element={<Graph />} />
-            <Route path="/conversation/:id/state" element={<State />} />
-            <Route path="/documents" element={<Documents />} />
-          </Routes>
-        )}
+        <Routes>
+          <Route path="/" element={<Chat />} />
+          <Route path="/conversation/:id" element={<Chat />} />
+          <Route path="/conversation/:id/graph" element={<Graph />} />
+          <Route path="/conversation/:id/state" element={<State />} />
+          <Route path="/documents" element={<Documents />} />
+        </Routes>
       </main>
     </div>
+  )
+}
+
+function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/*" element={
+        <ProtectedRoute>
+          <AppLayout />
+        </ProtectedRoute>
+      } />
+    </Routes>
   )
 }
 

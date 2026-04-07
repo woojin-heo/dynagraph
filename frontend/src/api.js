@@ -1,16 +1,42 @@
 const API_BASE = '/api';
 
-const TENANT_STORAGE_KEY = 'dynagraph_tenant_id'
+const AUTH_STORAGE_KEY = 'dynagraph_auth_token'
 
-function getTenantId() {
-  return localStorage.getItem(TENANT_STORAGE_KEY) || ''
+function getToken() {
+  return localStorage.getItem(AUTH_STORAGE_KEY) || ''
 }
 
-function tenantHeaders(extra = {}) {
-  const tid = getTenantId()
+function authHeaders(extra = {}) {
+  const token = getToken()
   const headers = { 'Content-Type': 'application/json', ...extra }
-  if (tid) headers['X-Tenant-ID'] = tid
+  if (token) headers['Authorization'] = `Bearer ${token}`
   return headers
+}
+
+export async function login(username, password) {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Login failed')
+  }
+  return res.json()
+}
+
+export async function register(username, password, displayName) {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, display_name: displayName }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Registration failed')
+  }
+  return res.json()
 }
 
 export async function* parseSSE(response) {
@@ -50,13 +76,13 @@ export async function* parseSSE(response) {
 export async function* chatStream(body) {
   const res = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
-    headers: tenantHeaders(),
+    headers: authHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    const msg = res.status === 403
-      ? (err.error || "Forbidden. Start the backend first (PYTHONPATH=. python -m backend.app), then open http://127.0.0.1:5001/api/health in a new tab to confirm it returns {\"status\":\"ok\"}. Use the app at http://localhost:5173.")
+    const msg = res.status === 401
+      ? (err.error || 'Unauthorized. Please log in.')
       : (err.error || res.statusText);
     throw new Error(msg);
   }
@@ -66,7 +92,7 @@ export async function* chatStream(body) {
 export async function* resumeStream(body) {
   const res = await fetch(`${API_BASE}/resume`, {
     method: 'POST',
-    headers: tenantHeaders(),
+    headers: authHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -77,13 +103,13 @@ export async function* resumeStream(body) {
 }
 
 export async function getConversation(id) {
-  const res = await fetch(`${API_BASE}/conversation/${id}`, { headers: tenantHeaders() });
+  const res = await fetch(`${API_BASE}/conversation/${id}`, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load conversation');
   return res.json();
 }
 
 export async function getState(conversationId) {
-  const res = await fetch(`${API_BASE}/state?conversation_id=${encodeURIComponent(conversationId)}`, { headers: tenantHeaders() });
+  const res = await fetch(`${API_BASE}/state?conversation_id=${encodeURIComponent(conversationId)}`, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load state');
   return res.json();
 }
@@ -91,32 +117,31 @@ export async function getState(conversationId) {
 export async function getGraph(conversationId, turn = null) {
   let url = `${API_BASE}/graph?conversation_id=${encodeURIComponent(conversationId)}`;
   if (turn != null) url += `&turn=${turn}`;
-  const res = await fetch(url, { headers: tenantHeaders() });
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load graph');
   return res.json();
 }
 
 export async function getDocuments() {
-  const res = await fetch(`${API_BASE}/documents`, { headers: tenantHeaders() });
+  const res = await fetch(`${API_BASE}/documents`, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load documents');
   return res.json();
 }
 
 export async function getTables() {
-  const res = await fetch(`${API_BASE}/tables`, { headers: tenantHeaders() });
+  const res = await fetch(`${API_BASE}/tables`, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load tables');
   return res.json();
 }
 
 export async function getConfig() {
-  const res = await fetch(`${API_BASE}/config`, { headers: tenantHeaders() });
+  const res = await fetch(`${API_BASE}/config`, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load config');
   return res.json();
 }
 
-// Tenant-scoped conversation list
 export async function getConversations() {
-  const res = await fetch(`${API_BASE}/conversations`, { headers: tenantHeaders() });
+  const res = await fetch(`${API_BASE}/conversations`, { headers: authHeaders() });
   if (!res.ok) throw new Error('Failed to load conversations');
   return res.json();
 }
@@ -124,7 +149,7 @@ export async function getConversations() {
 export async function deleteConversation(conversationId) {
   const res = await fetch(`${API_BASE}/conversations/${conversationId}`, {
     method: 'DELETE',
-    headers: tenantHeaders(),
+    headers: authHeaders(),
   });
   if (!res.ok) throw new Error('Failed to delete conversation');
   return res.json();

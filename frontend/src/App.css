@@ -182,6 +182,132 @@
   font-size: 0.95rem;
 }
 
+/* User menu (replaces tenant selector) */
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.user-display-name {
+  color: #a1a1aa;
+  font-size: 0.85rem;
+}
+.signout-btn {
+  background: #3f3f46;
+  color: #e4e4e7;
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.signout-btn:hover {
+  background: #52525b;
+}
+
+/* Auth pages (login / register) */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #09090b;
+}
+.auth-card {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  padding: 2.5rem 2rem;
+  width: 100%;
+  max-width: 380px;
+}
+.auth-title {
+  color: #e4e4e7;
+  font-size: 1.5rem;
+  font-weight: 700;
+  text-align: center;
+  margin: 0 0 0.25rem;
+}
+.auth-heading {
+  color: #71717a;
+  font-size: 1rem;
+  font-weight: 400;
+  text-align: center;
+  margin: 0 0 1.75rem;
+}
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  color: #a1a1aa;
+  font-size: 0.85rem;
+}
+.auth-form input {
+  background: #27272a;
+  color: #e4e4e7;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.auth-form input:focus {
+  border-color: #6366f1;
+}
+.auth-optional {
+  color: #52525b;
+  font-size: 0.78rem;
+}
+.auth-error {
+  color: #ef4444;
+  font-size: 0.83rem;
+  margin: 0;
+}
+.auth-btn {
+  background: #6366f1;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0.65rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 0.25rem;
+  transition: background 0.15s;
+}
+.auth-btn:hover:not(:disabled) {
+  background: #4f46e5;
+}
+.auth-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.auth-link {
+  color: #71717a;
+  font-size: 0.85rem;
+  text-align: center;
+  margin: 1.25rem 0 0;
+}
+.auth-link a {
+  color: #818cf8;
+}
+.auth-link a:hover {
+  color: #6366f1;
+}
+.auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: #71717a;
+}
+
 /* Main content area */
 .main {
   flex: 1;

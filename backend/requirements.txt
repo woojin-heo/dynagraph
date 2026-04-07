@@ -15,3 +15,5 @@ uvicorn[standard]
 matplotlib
 numpy
 pandas
+PyJWT>=2.8.0
+bcrypt>=4.1.0

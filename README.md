@@ -34,16 +34,20 @@ Communicates with the backend via REST and Server-Sent Events (SSE) for streamin
     - state debug. 
     
 - **Backend API** (FastAPI)
-    - Session-per-conversation `ConversationAgent`
+    - JWT-authenticated, tenant-scoped `ConversationAgent` runtime
     - exposes 
         - `/api/chat` (SSE)
         - `/api/resume` (SSE)
+        - `GET /api/config`
+        - `GET /api/trace`
         - `GET /api/conversation/<conversation_id>`
+        - `GET /api/conversations`
         - `GET /api/state`
         - `GET /api/graph`
         - `GET /api/documents`
         - `GET /api/health`
         - `GET /api/tables`
+        - auth: `/api/auth/register`, `/api/auth/login`, `/api/auth/me`
 - **Agent core**: 
     - For each user message, a **planner** (LLM) produces a plan and a list of **actions** with execution order. 
     - An **execution graph** (LangGraph `StateGraph`) is built from those actions—nodes are action types (LLM or tool), edges follow execution order (with parallel fan-out/fan-in). 

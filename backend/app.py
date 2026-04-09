@@ -44,7 +44,13 @@ app.add_middleware(
 _agents: Dict[tuple, ConversationAgent] = {}
 
 HITL_BEFORE = ["SQL_EXECUTION"]
-AUTH_EXEMPT_PREFIXES = ("/api/health", "/api/auth", "/docs", "/redoc", "/openapi.json")
+AUTH_EXEMPT_PATHS = (
+    "/api/health",
+    "/api/auth/login",
+    "/api/auth/register",
+    "/openapi.json",
+)
+AUTH_EXEMPT_PREFIXES = ("/docs", "/redoc")
 
 # Bootstrap DB tables on import (idempotent)
 try:
@@ -213,7 +219,7 @@ async def require_auth(request: Request, call_next):
         return await call_next(request)
 
     path = request.url.path
-    if any(path.startswith(prefix) for prefix in AUTH_EXEMPT_PREFIXES):
+    if path in AUTH_EXEMPT_PATHS or any(path.startswith(prefix) for prefix in AUTH_EXEMPT_PREFIXES):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization", "").strip()

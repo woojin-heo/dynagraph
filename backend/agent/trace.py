@@ -141,7 +141,12 @@ def set_current_trace(tc: TraceCollector) -> contextvars.Token:
 
 
 def reset_current_trace(token: contextvars.Token) -> None:
-    _current_trace.reset(token)
+    try:
+        _current_trace.reset(token)
+    except ValueError:
+        # Streaming responses can finalize generators in a different context.
+        # Avoid crashing request handling when contextvars token reset is not valid.
+        _current_trace.set(None)
 
 
 def get_current_trace() -> Optional[TraceCollector]:

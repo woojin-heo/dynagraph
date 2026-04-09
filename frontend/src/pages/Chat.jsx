@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect, Fragment } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import { chatStream, resumeStream, getConversation } from '../api'
-import { useTenant } from '../TenantContext'
 import Graph from './Graph'
 import State from './State'
 import Sidebar from './Sidebar'
@@ -13,7 +12,6 @@ const STORAGE_KEY = 'dynagraph_last_conversation_id'
 function Chat() {
   const { id: urlId } = useParams()
   const navigate = useNavigate()
-  const { tenantId } = useTenant()
   const [conversationId, setConversationId] = useState(urlId || null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -118,12 +116,6 @@ function Chat() {
   }, [])
 
   useEffect(() => {
-    if (!tenantId) {
-      setConversationId(null)
-      setMessages([])
-      sessionStorage.removeItem(STORAGE_KEY)
-      return
-    }
     if (urlId) {
       setConversationId(urlId)
       setLoading(true)
@@ -150,10 +142,11 @@ function Chat() {
         })
         .finally(() => setLoading(false))
     } else {
+      setLoading(false)
       setConversationId(null)
       setMessages([])
     }
-  }, [urlId, tenantId, restoreConversation])
+  }, [urlId, restoreConversation])
 
   useEffect(() => {
     if (conversationId) sessionStorage.setItem(STORAGE_KEY, conversationId)
